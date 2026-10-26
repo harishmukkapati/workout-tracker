@@ -1,18 +1,18 @@
 {
-  "version": "1.7.2",
+  "version": "1.8.0",
   "minShell": 1,
-  "ref": "b704e9842733960bee7673b3f1bdec50f3eef52d",
-  "notes": "Chest and back is now two exercises: floor press and front raise.",
+  "ref": "e17cb9d07087e69ea165962e5d88881e155d6a02",
+  "notes": "Ultrawide layout: more columns, an At a glance panel and extra stats on wide screens.",
   "files": {
-    "app/app.js": "e8ecd57b5a17a040ab3fe13a9ce301366b5a096ca58c9a1c3f938a7076ee7b32",
+    "app/app.js": "e8a350ba4d34dd7c616f0185d1c7f4f666f3a2206e4d00fbd282c1f9523fe37f",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
-    "app/styles.css": "931e5aa3f5ea1cc993f7a8d7c07a5f8483bec0e8b792b72ab686e5615ff0b227",
+    "app/styles.css": "f2590a864670968c3e64cb8f854e5d37dd415bebfd8f0459ccdce66cc5793aeb",
     "core.js": "0c97b6329c0920c050df99c4313988b16caeeb36a7c0e7677f9cf39788c56d47",
     "preload.js": "d8e9765a90e6e3c24854e3206de75bd08ae03940c6164f6d249a7eb7d1a1caae",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
     "src/xlsx.js": "0ca61e04aeed2908196e8b0c9f057de8087b2ca6c56d943e0db09b77b2458fb1",
-    "version.json": "1141a4c6b7fe7935ddc9f908d7a203dc4cbd037f826a5edcfe127c496ddb6cb6"
+    "version.json": "486600133bfaf2f0971875a9fb7b2f108539cc0965c9cdf79d4c22224683ea68"
   }
 }
