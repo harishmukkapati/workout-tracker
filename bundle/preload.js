@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('api', {
   backup: {
     configure: (dir) => ipcRenderer.invoke('backup:configure', dir),
     now: () => ipcRenderer.invoke('backup:now'),
+    workbook: (sheets) => ipcRenderer.invoke('backup:workbook', sheets),
     suggest: () => ipcRenderer.invoke('backup:suggest'),
     pick: () => ipcRenderer.invoke('backup:pick'),
     onState: (cb) => ipcRenderer.on('backup:state', (_e, s) => cb(s)),

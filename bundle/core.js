@@ -112,6 +112,22 @@ exports.start = function start(ctx) {
     return cloudState;
   });
   handle('backup:now', () => { cloudBackup(true); return cloudState; });
+  // Readable copy for people and AI tools: an Excel workbook next to the JSON backups.
+  handle('backup:workbook', (_e, sheets) => {
+    if (!cloudDir) return { ok: false, error: 'Cloud backup is off.' };
+    try {
+      const { buildXlsx } = require('./src/xlsx');
+      const buf = buildXlsx(sheets);
+      fs.mkdirSync(cloudFolder(), { recursive: true });
+      const file = path.join(cloudFolder(), 'Workout Tracker Data.xlsx');
+      fs.writeFileSync(file + '.tmp', buf);
+      try { fs.renameSync(file + '.tmp', file); }
+      catch (err) { fs.rmSync(file + '.tmp', { force: true }); throw new Error(err.code === 'EBUSY' || err.code === 'EPERM' ? 'Close Workout Tracker Data.xlsx in Excel so it can update.' : err.message); }
+      cloudState = { ...cloudState, workbookAt: Date.now(), workbookError: null };
+    } catch (err) { cloudState = { ...cloudState, workbookError: err.message }; }
+    if (win && !win.isDestroyed()) win.webContents.send('backup:state', cloudState);
+    return cloudState;
+  });
   // Likely cloud folders on this PC, so setup is one click.
   handle('backup:suggest', () => {
     const home = app.getPath('home');

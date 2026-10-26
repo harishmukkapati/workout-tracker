@@ -1,6 +1,6 @@
 {
-  "version": "1.5.1",
+  "version": "1.6.0",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Cloud backup now finds Google Drive."
+  "notes": "Cloud backup now also saves Workout Tracker Data.xlsx, a readable copy of your whole history."
 }

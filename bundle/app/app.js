@@ -177,6 +177,7 @@ let data;
 let saveTimer;
 function save() {
   memo.clear();
+  workbookDirty = true;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => store.save(data), 300);
 }
@@ -1631,7 +1632,7 @@ document.addEventListener('click', async (e) => {
     case 'backup-use': setBackupDir(a.dataset.dir); return;
     case 'backup-pick': { const dir = await window.api?.backup?.pick(); if (dir) setBackupDir(dir); return; }
     case 'backup-off': setBackupDir(null); return;
-    case 'backup-now': window.api?.backup?.now().then(st => { ui.backup = st; refreshBackupCard(); toast(st.error ? st.error : 'Backed up'); }); return;
+    case 'backup-now': window.api?.backup?.now().then(st => { ui.backup = st; writeWorkbook(true); refreshBackupCard(); toast(st.error ? st.error : 'Backed up'); }); return;
     case 'backup-nudge-off': data.settings.backupNudgeOff = true; break;
     case 'add-break': { const t = todayStr(); (data.settings.breaks ||= []).push({ id: 'b-' + uid(), label: 'Time off', start: t, end: addDays(t, 6) }); break; }
     case 'del-break': { if (!confirmInline(a)) return; data.settings.breaks = (data.settings.breaks || []).filter(b => b.id !== a.dataset.id); break; }
@@ -1840,16 +1841,146 @@ function backupCard() {
   const when = st.lastAt ? new Date(st.lastAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
   return `<header class="card-head"><h2>Cloud backup</h2>${dir && !st.error ? `<span class="pill ok">${when ? 'Backed up ' + esc(when) : 'On'}</span>` : ''}</header>
     <p>Keeps a copy of your history in a cloud folder, so a dead drive or a new PC doesn't lose it. Saves every 10 minutes while you use the app, keeps one file per day for 60 days, and <code>latest.json</code> is always current.</p>
+    <p><b>Workout Tracker Data.xlsx</b> sits next to it: your full history as readable tabs (Guide, Summary, Daily, Sets, Food, Plans). Open it in Google Sheets or Excel, or point an AI assistant like Claude at it to ask questions about your training.</p>
     ${dir ? `<div class="copy-row"><span>Folder</span><code>${esc(dir)}\\Workout Tracker Backups</code><button class="btn btn-small btn-ghost" data-action="backup-off">Turn off</button></div>
       ${st.error ? `<p class="sync-status bad">${esc(st.error)}</p>` : ''}
+      ${st.workbookError ? `<p class="sync-status bad">${esc(st.workbookError)}</p>` : st.workbookAt ? `<p class="sync-status ok">Workout Tracker Data.xlsx updated ${new Date(st.workbookAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.</p>` : ''}
       <div class="row-gap wrap"><button class="btn btn-small" data-action="backup-now">Back up now</button><span class="hint">To restore on another PC, use Restore from backup below and pick latest.json.</span></div>`
     : `<div class="row-gap wrap">${sug.map(x => `<button class="btn" data-action="backup-use" data-dir="${esc(x.dir)}">Use ${esc(x.name)}</button>`).join('')}<button class="btn ${sug.length ? 'btn-ghost' : ''}" data-action="backup-pick">Choose a folder</button></div>
       ${sug.length ? '' : '<p class="hint">No OneDrive or iCloud Drive folder found on this PC. Install one of them, or choose any synced folder.</p>'}`}`;
 }
+// ---------- Readable workbook (Excel) for people and AI tools ----------
+const yn = (v) => v ? 'yes' : 'no';
+const r1 = (v) => v == null || !isFinite(v) ? '' : Math.round(v * 10) / 10;
+const r0 = (v) => v == null || !isFinite(v) ? '' : Math.round(v);
+function planDayLabel(sc) { return sc.kind === 'off' ? `Time off (${sc.label})` : sc.kind === 'rest' ? 'Rest' : sc.kind === 'before' ? 'Before plan' : `Day ${sc.day}`; }
+function workbookSheets() {
+  const s = data.settings, today = todayStr(), sc = schedule(), st = stats();
+  const allDates = [...new Set([...Object.keys(data.days), ...Object.keys(data.health), ...Object.keys(sc).filter(d => d <= today)])].filter(d => d <= today).sort();
+  const exName = (id) => allExercises().find(e => e.id === id)?.name || id;
+  const blockOf = (id) => liftBlocks().find(b => b.exercises.some(e => e.id === id))?.name || '';
+  const fmtRange = (a, b, u = '') => a == null ? '' : `${a}${b != null && b !== a ? '–' + b : ''}${u}`;
+
+  // Daily
+  const daily = [['date', 'weekday', 'plan_day', 'status', 'workout_completion_pct', 'workout_finished', 'side_sets_logged', 'drop_sets', 'lifting_kcal_est', 'cardio_minutes', 'cardio_kcal_est', 'kcal_in', 'kcal_out', 'kcal_out_source', 'net_kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugar_g', 'sodium_mg', 'body_weight_lb', 'apple_active_kcal', 'apple_resting_kcal', 'steps', 'exercise_min', 'stand_hours', 'resting_hr_bpm', 'sleep_hours', 'missed_reason', 'missed_note', 'pain_0_10', 'recovery_done', 'recovery_total', 'workout_note', 'recovery_note']];
+  for (const d of allDates) {
+    const rec = data.days[d], h = data.health[d] || {}, sd = sched(d), p = progress(rec), c = calories(d), n = nutrition(dayEntries(rec)).t;
+    const cardioMin = cardioBlocks().flatMap(b => b.items).reduce((a, it) => a + (rec?.cardio?.[it.id]?.done ? +rec.cardio[it.id].min || 0 : 0), 0);
+    const brk = sd.kind === 'off' ? (s.breaks || []).find(b => b.id === sd.breakId) : null;
+    const rTot = brk ? (brk.items || []).reduce((a, it) => a + (+it.times || 1), 0) : '';
+    const rDone = brk ? (brk.items || []).reduce((a, it) => a + Math.min(+rec?.rehab?.[it.id] || 0, +it.times || 1), 0) : '';
+    const hasFood = dayEntries(rec).length > 0;
+    daily.push([d, longDate(d, { weekday: 'short' }), planDayLabel(sd), sd.status, Math.round(p.pct * 100), yn(rec?.done), p.sidesDone, dropsDone(rec), r0(c.liftK), cardioMin || '', r0(c.cardioK) || '',
+      hasFood ? r0(c.inK) : '', r0(c.out), c.out ? (c.basis || '') : '', hasFood && c.out ? r0(c.net) : '',
+      hasFood ? r1(n.protein) : '', hasFood ? r1(n.carbs) : '', hasFood ? r1(n.fat) : '', hasFood ? r1(n.fiber) : '', hasFood ? r1(n.sugar) : '', hasFood ? r0(n.sodium) : '',
+      weightOn(d) ?? '', h.active ?? '', h.basal ?? '', h.steps ?? '', h.exercise ?? '', h.stand ?? '', h.restingHR ?? '', h.sleepH ?? '',
+      rec?.miss?.reason ? reasonOf(rec.miss.reason)?.label || rec.miss.reason : '', rec?.miss?.note || '', rec?.pain ?? '', rDone, rTot, rec?.note || '', rec?.rehabNote || '']);
+  }
+
+  // Sets
+  const sets = [['date', 'plan_day', 'block', 'exercise', 'set', 'side', 'reps', 'weight_lb', 'drop_set_to_failure', 'completed', 'target_reps', 'exercise_note']];
+  for (const d of Object.keys(data.days).sort()) {
+    const rec = data.days[d];
+    for (const e of allExercises()) {
+      const arr = rec.sets?.[e.id];
+      if (!arr) continue;
+      arr.forEach((row, i) => {
+        if (!row) return;
+        for (const side of sidesOf(e)) {
+          const cc = row[side];
+          if (!cc || (!cc.c && !cc.r)) continue;
+          sets.push([d, planDayLabel(sched(d)), blockOf(e.id), e.name, i + 1, SIDE_LABEL[side].toLowerCase(), +cc.r || 0, cc.w ?? '', yn(i === e.sets - 1 && cc.d), yn(cc.c), fmtRange(e.repMin, e.repMax), i === 0 && side === sidesOf(e)[0] ? rec.exNotes?.[e.id] || '' : '']);
+        }
+      });
+    }
+  }
+
+  // Food
+  const food = [['date', 'meal', 'food', 'quantity', 'unit', 'kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugar_g', 'sodium_mg']];
+  for (const d of Object.keys(data.days).sort()) {
+    for (const e of dayEntries(data.days[d])) {
+      const unit = data.meals.flatMap(m => m.items).find(it => it.name === e.name)?.unit || (e.meal === 'Extras' ? 'entry' : '');
+      food.push([d, e.meal, e.name, e.qty, unit, r0(e.qty * e.kcal), r1(e.qty * e.protein), r1(e.qty * (+e.n.carbs || 0)), r1(e.qty * (+e.n.fat || 0)), r1(e.qty * (+e.n.fiber || 0)), r1(e.qty * (+e.n.sugar || 0)), r0(e.qty * (+e.n.sodium || 0))]);
+    }
+  }
+
+  // Summary
+  const tmr = addDays(today, 1);
+  const avg = (days) => { const a = averageNutrition(days); return a.days ? a : null; };
+  const a7 = avg(7), a30 = avg(30);
+  const wDates = allDates.filter(d => weightOn(d) != null);
+  const lastW = wDates.length ? weightOn(wDates[wDates.length - 1]) : null;
+  const w30 = wDates.filter(d => diffDays(d, today) <= 30);
+  const summary = [['metric', 'value'],
+    ['Exported', new Date().toLocaleString()], ['Plan start date', s.startDate], ['Days tracked', allDates.length],
+    ['Workouts completed', st.workouts], ['Current streak (days on plan)', st.streak], ['Longest streak', st.longest],
+    ['Training days hit, last 30 days', st.rate30 == null ? '' : Math.round(st.rate30 * 100) + '%'],
+    ['Missed days, all time', st.missed.length],
+    ...Object.entries(st.reasons).map(([k, v]) => [`  missed because: ${reasonOf(k)?.label || 'no reason given'}`, v]),
+    ...(s.breaks || []).map(b => [`Time off: ${b.label || 'Time off'}`, `${b.start} to ${b.end}`]),
+    ['Latest body weight (lb)', lastW ?? ''],
+    ['Body weight change, last 30 days (lb)', w30.length > 1 ? r1(weightOn(w30[w30.length - 1]) - weightOn(w30[0])) : ''],
+    ...[['7-day', a7], ['30-day', a30]].flatMap(([label, a]) => a ? [
+      [`${label} average calories in (${a.days} days logged)`, r0(a.t.kcal)], [`${label} average protein (g)`, r0(a.t.protein)],
+      [`${label} average carbs (g)`, r0(a.t.carbs)], [`${label} average fat (g)`, r0(a.t.fat)],
+      [`${label} average fiber (g)`, r0(a.t.fiber)], [`${label} average sodium (mg)`, r0(a.t.sodium)]] : []),
+    [], ['Exercise', 'Working weight, last reps, status, best'],
+    ...allExercises().map(e => {
+      const pr = progression(e, tmr), all = sessionsOf(e.id, tmr, 9999);
+      const best = all.reduce((m, x) => Math.max(m, sessionTop(x.sets).top), 0);
+      const status = !pr ? 'no weights logged yet' : pr.kind === 'up' ? `ready to go up to ${pr.to} lb` : pr.kind === 'stuck' ? 'stuck for 3 sessions' : `building to ${pr.target} reps on every set`;
+      return [e.name, pr ? `${pr.from ?? pr.at} lb, last reps ${pr.reps}, ${status}, best ${best} lb, ${all.length} sessions` : 'no sessions logged'];
+    })];
+
+  // Plans
+  const plan = [['block', 'exercise', 'sets', 'reps_min', 'reps_max', 'per_side', 'weight_min_lb', 'weight_max_lb', 'drop_set_on_last_set']];
+  for (const b of data.program.blocks) {
+    if (b.type === 'cardio') for (const it of b.items) plan.push([b.name, it.name, '', '', '', '', '', '', '', ]);
+    else for (const e of b.exercises) plan.push([b.name, e.name, e.sets, e.repMin, e.repMax, yn(e.perSide), e.wMin ?? '', e.wMax ?? '', yn(e.drop)]);
+  }
+  plan.push([], ['meal', 'food', 'default_qty', 'unit', 'kcal_per_unit', 'protein_g_per_unit', 'carbs_g_per_unit', 'fat_g_per_unit', 'fiber_g_per_unit', 'sodium_mg_per_unit']);
+  for (const m of data.meals) for (const it of m.items) plan.push([m.name, it.name, it.qty, it.unit, it.kcal, it.protein, it.n?.carbs ?? 0, it.n?.fat ?? 0, it.n?.fiber ?? 0, it.n?.sodium ?? 0]);
+
+  // Guide
+  const blocksText = data.program.blocks.map((b, i) => b.type === 'cardio'
+    ? `Block ${i + 1} (${b.name}): ${b.items.map(it => `${it.name} ${it.minMin}–${it.maxMin} min`).join(', ')}`
+    : `Block ${i + 1} (${b.name}): ${b.exercises.map(e => `${e.name} ${e.sets}x${fmtRange(e.repMin, e.repMax)}${e.perSide ? ' per side' : ''}${e.wMin ? ' at ' + fmtRange(e.wMin, e.wMax, ' lb') : ''}${e.drop ? ', drop set to failure on the last set' : ''}`).join('; ')}`);
+  const guide = [['topic', 'details'],
+    ['What this is', `Personal training, nutrition and health log from the Workout Tracker app for one person. Updated automatically. Exported ${new Date().toLocaleString()}.`],
+    ['Units', 'Weights in pounds (lb), energy in kcal, macros in grams (g), sodium in milligrams (mg). Dates are local, YYYY-MM-DD.'],
+    ['Schedule rules', 'Repeating 3-day cycle: Day 1 train, Day 2 train (same workout), Day 3 rest. If a training day passes without the workout, it is a miss and the next day restarts at Day 1. A training day counts when finished or at least ' + Math.round(s.threshold * 100) + '% of checks are done. Planned time off is not a miss and does not break the streak.'],
+    ...blocksText.map((t, i) => [i === 0 ? 'Workout' : '', t]),
+    ['Progression rule', `Double progression: when every set of an exercise reaches the top of its rep range, the next session goes up ${+s.weightStep || 5} lb.`],
+    ['Calorie estimates', `Calories out is from Apple Health when synced (see kcal_out_source); otherwise estimated: resting burn (Mifflin-St Jeor) x ${s.activityFactor}, plus lifting (${s.minPerSetSide} min per logged side-set at MET ${s.liftMet}, drop sets ${s.dropMin ?? 0.5} min at MET ${s.dropMet ?? 6}) and cardio (Beat Saber at MET ${cardioBlocks()[0]?.items[0]?.met ?? 6}). Food values come from product labels and USDA data and are estimates.`],
+    ['Tab: Summary', 'Headline stats, averages, and each exercise\'s working weight, last reps, progression status and best weight.'],
+    ['Tab: Daily', 'One row per day. Key columns: plan_day, status (done, missed, rest, off, today, extra = trained on a rest day), workout_completion_pct, kcal_in/kcal_out/net_kcal, macros, body_weight_lb, Apple Health activity (apple_active_kcal, steps, exercise_min, stand_hours, resting_hr_bpm, sleep_hours), missed_reason, pain_0_10 and recovery_* during time off.'],
+    ['Tab: Sets', 'One row per logged set and side (left, right or both). drop_set_to_failure applies only to the last set. completed = the set was checked off.'],
+    ['Tab: Food', 'One row per food eaten per day, with totals for the quantity eaten.'],
+    ['Tab: Plans', 'The current workout plan and meal plan (per-unit nutrition).'],
+  ];
+
+  return [
+    { name: 'Guide', rows: guide, widths: [22, 140] },
+    { name: 'Summary', rows: summary, widths: [46, 90] },
+    { name: 'Daily', rows: daily, widths: [12, 9, 22, 9, ...Array(daily[0].length - 4).fill(14)] },
+    { name: 'Sets', rows: sets, widths: [12, 22, 16, 38, 6, 8, 7, 10, 18, 11, 12, 40] },
+    { name: 'Food', rows: food, widths: [12, 14, 28, 9, 22, 8, 10, 9, 8, 8, 8, 10] },
+    { name: 'Plans', rows: plan, widths: [16, 38, 10, 22, 13, 18, 16, 16, 18, 18] },
+  ];
+}
+let workbookAt = 0, workbookDirty = true;
+function writeWorkbook(force) {
+  if (!window.api?.backup || !data.settings.backupDir) return;
+  if (!force && (!workbookDirty || Date.now() - workbookAt < 10 * 60 * 1000)) return;
+  workbookAt = Date.now(); workbookDirty = false;
+  try { window.api.backup.workbook(workbookSheets()).then(st => { ui.backup = st; refreshBackupCard(); }); }
+  catch (err) { console.error(err); }
+}
+
 function refreshBackupCard() { const c = $('#backup-card'); if (c) c.innerHTML = backupCard(); }
 function setBackupDir(dir) {
   data.settings.backupDir = dir || null; save();
-  window.api?.backup?.configure(dir || null).then(st => { ui.backup = st; refreshBackupCard(); if (dir && !st.error) toast('Cloud backup is on'); render(); });
+  window.api?.backup?.configure(dir || null).then(st => { ui.backup = st; refreshBackupCard(); if (dir && !st.error) { toast('Cloud backup is on'); writeWorkbook(true); } render(); });
 }
 function backupNudge() {
   if (!window.api?.backup || data.settings.backupDir || data.settings.backupNudgeOff) return '';
@@ -2158,10 +2289,11 @@ const ICON = {
   refreshHealth();
   setInterval(tick, 30000);
   tick();
+  setInterval(() => writeWorkbook(false), 60 * 1000);
   if (window.api?.backup) {
     window.api.backup.onState(st => { ui.backup = st; refreshBackupCard(); });
     window.api.backup.suggest().then(sg => { ui.backupSuggest = sg; if (ui.view === 'today' || ui.view === 'settings') render(); }).catch(() => {});
-    if (data.settings.backupDir) window.api.backup.configure(data.settings.backupDir).then(st => { ui.backup = st; refreshBackupCard(); });
+    if (data.settings.backupDir) window.api.backup.configure(data.settings.backupDir).then(st => { ui.backup = st; refreshBackupCard(); writeWorkbook(true); });
   }
   if (window.api?.sync) {
     window.api.sync.onPush(onHealthPush);
