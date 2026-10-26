@@ -170,6 +170,19 @@ exports.start = function start(ctx) {
   };
   handle('sync:ready', () => { pageReady = true; const out = inbox.splice(0); return out; });
 
+  // Ask the page a question and wait for its answer (the page owns the data).
+  const asks = new Map(); let askSeq = 0;
+  function askPage(kind, arg) {
+    return new Promise((resolve, reject) => {
+      if (!pageReady || !win || win.isDestroyed()) return reject(new Error('Workout Tracker is still starting. Try again in a moment.'));
+      const id = ++askSeq;
+      asks.set(id, resolve);
+      win.webContents.send('page:ask', { id, kind, arg });
+      setTimeout(() => { if (asks.has(id)) { asks.delete(id); reject(new Error('Workout Tracker did not answer in time.')); } }, 8000);
+    });
+  }
+  handle('page:answer', (_e, { id, result }) => { asks.get(id)?.(result); asks.delete(id); return true; });
+
   const lanAddresses = () => Object.values(os.networkInterfaces()).flat()
     .filter(a => a && a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.'))
     .map(a => a.address)
@@ -197,8 +210,20 @@ exports.start = function start(ctx) {
     if (!cfg?.enabled || !cfg.key) { serverState = { ...serverState, listening: false, error: null, port: null }; return sendSyncState(); }
     server = http.createServer((req, res) => {
       const url = new URL(req.url, 'http://local');
-      if (!url.pathname.startsWith('/health') && url.pathname !== '/ping') return reply(res, 404, { ok: false, error: 'Not found' });
+      if (!url.pathname.startsWith('/health') && url.pathname !== '/ping' && url.pathname !== '/export') return reply(res, 404, { ok: false, error: 'Not found' });
       if (!keyOk(req, url)) return reply(res, 401, { ok: false, error: 'Wrong or missing key' });
+      // Apple Health export: the iPhone Shortcut fetches what's new and logs it into Health.
+      if (url.pathname === '/export') {
+        askPage('export', { mark: !url.searchParams.has('peek') })
+          .then((out) => {
+            if (out?.error) return reply(res, 403, { ok: false, error: out.error });
+            serverState = { ...serverState, lastExportAt: Date.now(), lastExportCount: out.count };
+            sendSyncState();
+            reply(res, 200, out);
+          })
+          .catch((err) => reply(res, 503, { ok: false, error: err.message }));
+        return;
+      }
       if (req.method === 'GET') {
         return reply(res, 200, `<!doctype html><meta name="viewport" content="width=device-width"><body style="font:17px system-ui;padding:32px;color:#1f1f1f"><h2 style="color:#188038">Workout Tracker is reachable</h2><p>Your iPhone can send Apple Health data to this PC. You can close this page.</p>`, 'text/html; charset=utf-8');
       }

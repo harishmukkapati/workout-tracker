@@ -59,3 +59,15 @@ resting calories, weight, resting heart rate and sleep to the app automatically,
 Turn on "Keep syncing when the window is closed" to keep the app in the system tray. Step-by-step
 setup for both iPhone apps is in the app. Google Fit Takeout, full Apple Health exports and CSV/JSON
 files can still be imported by hand.
+
+## Sending data to Apple Health
+
+Settings → Apple Health and Fitness → "Send my workouts and food to Apple Health". A "Save to Apple
+Health" Apple Shortcut (steps in the app) fetches anything new over Wi-Fi and logs it: lifting as
+Strength Training, Beat Saber as Mixed Cardio, daily calories/protein/carbs/fat/fiber/sugar/sodium, and
+weigh-ins. Each item is sent once.
+
+## Time off
+
+Settings → Schedule → Time off. Planned breaks (surgery recovery, trips) aren't misses and don't break
+your streak; the cycle restarts at Day 1 the day after.

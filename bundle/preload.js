@@ -21,6 +21,11 @@ contextBridge.exposeInMainWorld('api', {
     ready: () => ipcRenderer.invoke('sync:ready'),
     onPush: (cb) => ipcRenderer.on('health:push', (_e, p) => cb(p)),
     onState: (cb) => ipcRenderer.on('sync:state', (_e, s) => cb(s)),
+    onAsk: (cb) => ipcRenderer.on('page:ask', async (_e, q) => {
+      let result;
+      try { result = await cb(q); } catch (err) { result = { error: String(err?.message || err) }; }
+      ipcRenderer.invoke('page:answer', { id: q.id, result });
+    }),
   },
   background: (on) => ipcRenderer.invoke('sys:background', on),
   update: {

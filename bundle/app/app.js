@@ -146,6 +146,8 @@ function defaultData() {
       watchDir: null,
       background: false,
       goals: { move: 500, exercise: 30, stand: 12 },
+      breaks: [],
+      share: { enabled: false, workouts: true, cardio: true, food: true, weight: true, calories: true, foodAfter: '21:00' },
       lastNotified: null,
     },
     program: structuredClone(DEFAULT_PROGRAM),
@@ -228,6 +230,8 @@ const hasActivity = (rec) => !!rec && progress(rec).done > 0;
 // Schedule: derived from start date, manual restarts and what you logged.
 // A training day that passes without a workout is a miss, and the next day becomes Day 1.
 // ======================================================================
+// Planned time off (surgery, vacation...): no training, not a miss, cycle restarts at Day 1 after.
+const breakOn = (d) => (data.settings.breaks || []).find(b => b.start && b.end && d >= b.start && d <= b.end);
 function schedule() {
   return memoize('schedule', () => {
     const s = data.settings, L = s.cycle.length, today = todayStr();
@@ -237,6 +241,8 @@ function schedule() {
     const end = addDays(today, 120);
     for (let d = s.startDate; d <= end; d = addDays(d, 1)) {
       if (resets.has(d)) anchor = d;
+      const br = breakOn(d);
+      if (br) { out[d] = { day: 0, kind: 'off', status: 'off', label: br.label || 'Time off', until: br.end }; anchor = addDays(d, 1); continue; }
       const idx = mod(diffDays(anchor, d), L);
       const kind = s.cycle[idx];
       const rec = data.days[d];
@@ -264,11 +270,12 @@ function stats() {
     for (let i = dates.length - 1; i >= 0; i--) {
       const st = sc[dates[i]].status;
       if (dates[i] === today && st === 'today') continue;
+      if (st === 'off') continue;
       if (st === 'missed') break;
       streak++;
     }
     let longest = 0, run = 0;
-    for (const d of dates) { const st = sc[d].status; if (st === 'missed') run = 0; else if (st !== 'today') { run++; longest = Math.max(longest, run); } }
+    for (const d of dates) { const st = sc[d].status; if (st === 'missed') run = 0; else if (st !== 'today' && st !== 'off') { run++; longest = Math.max(longest, run); } }
     const workouts = dates.filter(d => ['done', 'extra'].includes(sc[d].status)).length;
     const last30 = dates.filter(d => diffDays(d, today) < 30);
     const done30 = last30.filter(d => sc[d].status === 'done' || sc[d].status === 'extra').length;
@@ -442,6 +449,7 @@ function toast(msg) {
 function cycleWord(sc) {
   const L = data.settings.cycle.length;
   if (sc.kind === 'before') return 'Before your plan started';
+  if (sc.kind === 'off') return sc.label;
   return `Day ${sc.day} of ${L}`;
 }
 function ring(pct, label) {
@@ -461,6 +469,7 @@ function viewToday() {
   const blocksTitle = liftBlocks().map(b => b.name.toLowerCase()).join(', ');
   let sub;
   if (sc.status === 'missed') sub = `Missed. ${rec?.miss?.reason ? reasonOf(rec.miss.reason)?.label + '.' : 'No reason logged yet.'} The next day restarted at Day 1.`;
+  else if (sc.kind === 'off') sub = `No training scheduled. You're back on ${longDate(addDays(sc.until, 1), { weekday: 'long', month: 'long', day: 'numeric' })}, starting at Day 1.`;
   else if (sc.kind === 'rest') sub = 'Rest day. Eat well, sleep well, come back for Day 1 tomorrow.';
   else if (sc.kind === 'before') sub = 'Your plan starts on ' + longDate(data.settings.startDate) + '.';
   else sub = `Training: ${blocksTitle}, then ${cardioBlocks().flatMap(b => b.items).map(i => i.name).join(', ')}.`;
@@ -468,6 +477,7 @@ function viewToday() {
   const statusPill = {
     done: '<span class="pill ok">Workout done</span>', extra: '<span class="pill ok">Bonus session</span>',
     missed: '<span class="pill miss">Missed</span>', rest: '<span class="pill rest">Rest</span>',
+    off: '',
     today: `<span class="pill live">${p.done ? 'In progress' : 'Not started'}</span>`, planned: '<span class="pill">Planned</span>',
     before: '',
   }[sc.status] || '';
@@ -536,6 +546,17 @@ function workoutSection(date, sc, rec, p, isFuture, isPast) {
           ${date === todayStr() ? `<div class="row-gap"><button class="btn" data-action="train-anyway">Train today instead</button><span class="hint">Restarts your cycle at Day 1 today.</span></div>` : ''}
         </div>
       </div>`;
+  } else if (sc.kind === 'off' && !hasActivity(rec)) {
+    const left = diffDays(date, sc.until) + 1;
+    return `
+      <div class="rest-card off-card">
+        <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 6c2 9 9 16 18 18-9 2-16 9-18 18-2-9-9-16-18-18 9-2 16-9 18-18Z"/><circle cx="50" cy="48" r="6"/><circle cx="14" cy="50" r="4"/></svg>
+        <div>
+          <h2>${esc(sc.label)}</h2>
+          <p>No workouts until ${esc(longDate(addDays(sc.until, 1), { weekday: 'long', month: 'long', day: 'numeric' }))}. ${left === 1 ? 'Last day off.' : `${left} days to go, counting today.`} These days don't count as misses or break your streak. Keep logging food and protein; it helps you recover.</p>
+          <div class="row-gap"><button class="btn btn-small" data-action="edit-breaks">Edit time off</button></div>
+        </div>
+      </div>`;
   } else if (sc.kind === 'before') {
     return `<div class="rest-card"><div><h2>Before your plan</h2><p>Your plan starts ${esc(longDate(data.settings.startDate))}. Change the start date in Settings.</p></div></div>`;
   }
@@ -598,7 +619,7 @@ function exerciseRow(date, e, rec) {
     `${e.sets} sets`,
     `${e.repMin}${e.repMax && e.repMax !== e.repMin ? '–' + e.repMax : ''} reps${e.perSide ? ' per side' : ''}`,
     e.wMin ? `${e.wMin}${e.wMax && e.wMax !== e.wMin ? '–' + e.wMax : ''} lb` : null,
-    e.drop ? 'dropset to failure' : null,
+    e.drop ? 'dropset on the last set' : null,
   ].filter(Boolean).join(', ');
   const note = rec?.exNotes?.[e.id] || '';
   const noteOpen = ui.notesOpen[key] || !!note;
@@ -643,7 +664,7 @@ function sideRow(date, e, i, side, rec) {
     <div class="reps" role="group" aria-label="Reps">${dots}<button class="rep-more" data-action="rep-more" aria-label="Add a rep">+</button></div>
     <span class="rep-num">${c.r || 0}</span>
     <label class="wt"><input type="number" inputmode="decimal" min="0" step="2.5" value="${c.w ?? ''}" placeholder="${ph}" data-input="weight" aria-label="Weight in pounds"><span>lb</span></label>
-    ${e.drop ? `<button class="drop ${c.d ? 'on' : ''}" data-action="drop" title="Dropset done">Drop</button>` : ''}
+    ${e.drop ? (i === e.sets - 1 ? `<button class="drop ${c.d ? 'on' : ''}" data-action="drop" title="Dropset to failure done">Drop</button>` : '<span class="drop drop-spacer" aria-hidden="true">Drop</span>') : ''}
     <button class="check ${c.c ? 'on' : ''}" data-action="check" aria-label="Mark ${SIDE_LABEL[side].toLowerCase()} side done">${ICON.check}</button>
   </div>`;
 }
@@ -861,7 +882,7 @@ function viewCalendar() {
     const rec = data.days[ds];
     const reason = s.status === 'missed' && rec?.miss?.reason ? reasonOf(rec.miss.reason) : null;
     const pct = progress(rec).pct;
-    const label = s.kind === 'before' ? '' : s.kind === 'rest' ? 'Rest' : `Day ${s.day}`;
+    const label = s.kind === 'before' ? '' : s.kind === 'off' ? 'Off' : s.kind === 'rest' ? 'Rest' : `Day ${s.day}`;
     cells += `<button class="cal-cell st-${s.status} ${ds === today ? 'is-today' : ''}" data-action="open-day" data-date="${ds}" ${reason ? `style="--rc:${reason.color}"` : ''} title="${esc(longDate(ds))}: ${s.status}${reason ? ' (' + reason.label + ')' : ''}">
       <span class="cal-d">${d}</span><span class="cal-l">${label}</span>
       ${s.status === 'missed' ? `<span class="cal-r">${reason ? esc(reason.label) : 'No reason'}</span>` : ''}
@@ -889,7 +910,7 @@ function viewCalendar() {
         <div class="cal-week">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => `<span>${d}</span>`).join('')}</div>
         <div class="cal-grid-m">${cells}</div>
         <div class="legend">
-          <span><i class="lg st-done"></i>Done</span><span><i class="lg st-today"></i>Today</span><span><i class="lg st-planned"></i>Planned</span><span><i class="lg st-rest"></i>Rest</span><span><i class="lg st-missed"></i>Missed</span>
+          <span><i class="lg st-done"></i>Done</span><span><i class="lg st-today"></i>Today</span><span><i class="lg st-planned"></i>Planned</span><span><i class="lg st-rest"></i>Rest</span><span><i class="lg st-missed"></i>Missed</span><span><i class="lg st-off"></i>Time off</span>
         </div>
       </section>
       <section class="card">
@@ -1126,9 +1147,9 @@ function viewHistory() {
     const s = sc[d], rec = data.days[d], p = progress(rec), c = calories(d);
     const r = rec?.miss?.reason ? reasonOf(rec.miss.reason) : null;
     const notes = [rec?.note, ...Object.entries(rec?.exNotes || {}).filter(([, v]) => v).map(([k, v]) => `${allExercises().find(e => e.id === k)?.name || k}: ${v}`), rec?.miss?.note].filter(Boolean);
-    const status = { done: 'Done', extra: 'Bonus', missed: 'Missed', rest: 'Rest', today: 'Today' }[s.status] || s.status;
+    const status = { done: 'Done', extra: 'Bonus', missed: 'Missed', rest: 'Rest', today: 'Today', off: 'Time off' }[s.status] || s.status;
     return `<button class="hist-row" data-action="open-day" data-date="${d}">
-      <span class="h-date"><b>${esc(longDate(d, { weekday: 'short', month: 'short', day: 'numeric' }))}</b><small>${s.kind === 'rest' ? 'Rest day' : 'Day ' + s.day}</small></span>
+      <span class="h-date"><b>${esc(longDate(d, { weekday: 'short', month: 'short', day: 'numeric' }))}</b><small>${s.kind === 'rest' ? 'Rest day' : s.kind === 'off' ? esc(s.label) : 'Day ' + s.day}</small></span>
       <span class="pill st-${s.status}">${status}</span>
       <span class="h-work">${p.done ? `<span class="mini-bar"><i style="width:${p.pct * 100}%"></i></span>${Math.round(p.pct * 100)}%` : r ? `<span class="reason-dot" style="--rc:${r.color}">${r.label}</span>` : ''}</span>
       <span class="h-cal">${c.inK ? num(c.inK) + ' in' : ''}${c.out && c.inK ? ' / ' + num(c.out) + ' out' : ''}</span>
@@ -1184,6 +1205,12 @@ function viewSettings() {
       </div>
       <p class="hint">Cycle: Day 1 train, Day 2 train, Day 3 rest. Miss a training day and the next day becomes Day 1.</p>
       <div class="row-gap"><button class="btn" data-action="restart-today">Restart at Day 1 today</button></div>
+      <div class="breaks" id="breaks">
+        <h3 class="sub-h">Time off</h3>
+        <p class="hint">Days with no training planned, like surgery recovery or a trip. They don't count as misses or break your streak, and you restart at Day 1 the day after.</p>
+        ${(s.breaks || []).map(b => `<div class="break-row"><input data-break="label" data-id="${b.id}" value="${esc(b.label || '')}" placeholder="Time off" aria-label="Name"><label class="field"><span>From</span><input type="date" data-break="start" data-id="${b.id}" value="${b.start}"></label><label class="field"><span>Through</span><input type="date" data-break="end" data-id="${b.id}" value="${b.end}"></label><span class="hint">${b.start && b.end ? `${diffDays(b.start, b.end) + 1} days` : ''}</span><button class="icon-btn sm" data-action="del-break" data-id="${b.id}" aria-label="Remove">${ICON.x}</button></div>`).join('')}
+        <button class="link-btn" data-action="add-break">+ Add time off</button>
+      </div>
     </section>
 
     <section class="card"><header class="card-head"><h2>Reminders</h2></header>
@@ -1460,6 +1487,14 @@ document.addEventListener('click', async (e) => {
       (navigator.clipboard?.writeText(t) || Promise.reject()).then(() => toast('Copied')).catch(() => toast(t));
       return;
     }
+    case 'add-break': { const t = todayStr(); (data.settings.breaks ||= []).push({ id: 'b-' + uid(), label: 'Time off', start: t, end: addDays(t, 6) }); break; }
+    case 'del-break': { if (!confirmInline(a)) return; data.settings.breaks = (data.settings.breaks || []).filter(b => b.id !== a.dataset.id); break; }
+    case 'edit-breaks': go('settings'); setTimeout(() => $('#breaks')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50); return;
+    case 'resend-week': {
+      const from = addDays(todayStr(), -6);
+      for (const k of Object.keys(data.exportLog || {})) { const d = k.split(':')[1]; if (d >= from) delete data.exportLog[k]; }
+      save(); refreshHealthCard(); toast('The last 7 days will be sent again on the next sync'); return;
+    }
     case 'new-key': data.settings.sync.key = newKey(); save(); applySync(); toast('New key made. Update it on your iPhone.'); return;
     case 'pick-watch': {
       const dir = await window.api?.sync?.pickFolder();
@@ -1564,8 +1599,8 @@ document.addEventListener('change', (e) => {
     const id = el.closest('[data-cardio]').dataset.cardio; const rec = getDay(date);
     rec.cardio[id] = { ...(rec.cardio[id] || {}), min: +el.value || 0 }; save(); return render();
   }
-  if (k === 'body-weight') { const rec = getDay(date); rec.weight = el.value ? round(+el.value, 1) : undefined; save(); return render(); }
-  if (k === 'quick-weight') { if (el.value) { getDay(todayStr()).weight = round(+el.value, 1); save(); render(); toast('Weight logged for today'); } return; }
+  if (k === 'body-weight') { const rec = getDay(date); rec.weight = el.value ? round(+el.value, 1) : undefined; rec.weightAt = Date.now(); save(); return render(); }
+  if (k === 'quick-weight') { if (el.value) { const r = getDay(todayStr()); r.weight = round(+el.value, 1); r.weightAt = Date.now(); save(); render(); toast('Weight logged for today'); } return; }
   if (k === 'day-jump') { if (el.value) { ui.date = el.value; ui.open = {}; render(); } return; }
   if (k === 'prog-ex') { ui.progEx = el.value; return render(); }
 
@@ -1577,6 +1612,19 @@ document.addEventListener('change', (e) => {
     if (hk === 'port') { const v = +el.value; if (v >= 1024 && v <= 65535) { s.sync.port = v; save(); applySync(); } else toast('Use a port between 1024 and 65535'); }
     if (hk === 'background') { s.background = el.checked; save(); window.api?.background(el.checked); toast(el.checked ? 'Closing the window now keeps the app in the tray' : 'Closing the window quits the app'); }
     return;
+  }
+  if (el.dataset.break) {
+    const b = (data.settings.breaks || []).find(x => x.id === el.dataset.id);
+    if (!b) return;
+    b[el.dataset.break] = el.value;
+    if (b.start && b.end && b.end < b.start) b.end = b.start;
+    save(); toast('Saved'); if (el.type === 'date') render(); return;
+  }
+  if (el.dataset.share) {
+    const sh = data.settings.share, k = el.dataset.share;
+    sh[k] = el.type === 'checkbox' ? el.checked : el.value;
+    if (k === 'enabled' && el.checked && !data.settings.sync?.enabled) { data.settings.sync.enabled = true; data.settings.sync.key ||= newKey(); applySync(); }
+    save(); el.blur(); setTimeout(refreshHealthCard, 30); return;
   }
   if (el.dataset.goal) { const g = (data.settings.goals ||= { move: 500, exercise: 30, stand: 12 }); g[el.dataset.goal] = Math.max(1, +el.value || 1); save(); toast('Saved'); return; }
 
@@ -1661,6 +1709,7 @@ function healthCard() {
       </div>
     </div>
     <label class="toggle bg-toggle"><input type="checkbox" data-health="background" ${s.background ? 'checked' : ''}><span><b>Keep syncing when the window is closed</b><small>Closing the window hides the app in the system tray instead of quitting. Pair it with "Open when I sign in to Windows" under Reminders.</small></span></label>
+    ${shareSection(url, sy.key)}
     <div class="form-grid goals"><label class="field"><span>Move goal (kcal)</span><input type="number" data-goal="move" value="${g.move}"></label><label class="field"><span>Exercise goal (min)</span><input type="number" data-goal="exercise" value="${g.exercise}"></label><label class="field"><span>Stand goal (hours)</span><input type="number" data-goal="stand" value="${g.stand}"></label></div>
     <details class="howto"><summary>Set up with Health Auto Export (easiest)</summary>
       <ol>
@@ -1692,6 +1741,106 @@ function healthCard() {
       <p><b>Full Apple Health export:</b> Health app → your profile picture → Export All Health Data. Imported files re-sync automatically when they change.</p>
     </details>`;
 }
+// ---------- Send to Apple Health ----------
+function isoLocal(ms) {
+  const d = new Date(ms), off = -d.getTimezoneOffset(), sign = off >= 0 ? '+' : '-';
+  return `${fmtDate(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:00${sign}${pad(Math.floor(Math.abs(off) / 60))}:${pad(Math.abs(off) % 60)}`;
+}
+const at = (date, h, m = 0) => { const d = parseDate(date); d.setHours(h, m, 0, 0); return d.getTime(); };
+const sameDay = (ms, date) => ms && fmtDate(new Date(ms)) === date;
+// Everything not yet sent, from the last 30 days.
+function exportCandidates() {
+  const sh = data.settings.share, log = (data.exportLog ||= {}), today = todayStr(), out = { workouts: [], cardio: [], food: [], weights: [] }, keys = [];
+  const now = new Date(), [fh, fm] = (sh.foodAfter || '21:00').split(':').map(Number);
+  const foodReadyToday = now.getHours() * 60 + now.getMinutes() >= fh * 60 + fm;
+  let from = addDays(today, -29); if (from < data.settings.startDate) from = data.settings.startDate;
+  for (let d = from; d <= today; d = addDays(d, 1)) {
+    const rec = data.days[d];
+    if (!rec) continue;
+    const finished = rec.done || d < today;
+    const p = progress(rec);
+    // Lifting session
+    let liftEnd = at(d, 12);
+    if (p.sidesDone > 0) {
+      const start = sameDay(rec.startedAt, d) ? rec.startedAt : at(d, 12);
+      const real = sameDay(rec.finishedAt, d) ? (rec.finishedAt - start) / 60000 : null;
+      const minutes = Math.round(real && real >= 10 && real <= 240 ? real : Math.max(10, p.sidesDone * data.settings.minPerSetSide));
+      liftEnd = start + minutes * 60000;
+      if (sh.workouts && finished && !log['w:' + d]) {
+        out.workouts.push({ start: isoLocal(start), minutes, kcal: sh.calories ? Math.round(minutes * kcalPerMin(data.settings.liftMet, d)) : 0, day: d });
+        keys.push('w:' + d);
+      }
+    }
+    // Cardio (Beat Saber), right after lifting
+    for (const b of cardioBlocks()) for (const it of b.items) {
+      const c = rec.cardio?.[it.id], k = `c:${d}:${it.id}`;
+      if (!sh.cardio || !c?.done || !(+c.min > 0) || !finished || log[k]) continue;
+      out.cardio.push({ name: it.name, start: isoLocal(liftEnd), minutes: +c.min, kcal: sh.calories ? Math.round(+c.min * kcalPerMin(it.met || 6, d)) : 0, day: d });
+      keys.push(k);
+    }
+    // Food: complete days, plus today after the cutoff time
+    if (sh.food && !log['f:' + d] && (d < today || foodReadyToday)) {
+      const { t, count } = nutrition(dayEntries(rec));
+      if (count) {
+        out.food.push({ date: isoLocal(d < today ? at(d, 20) : Date.now()), kcal: Math.round(t.kcal), protein: Math.round(t.protein), carbs: Math.round(t.carbs), fat: Math.round(t.fat), fiber: Math.round(t.fiber), sugar: Math.round(t.sugar), sodium: Math.round(t.sodium), day: d });
+        keys.push('f:' + d);
+      }
+    }
+    // Weigh-ins you typed (skip ones that came from Apple Health in the first place)
+    if (sh.weight && rec.weight && !log['wt:' + d] && data.health[d]?.weightLb !== rec.weight) {
+      out.weights.push({ date: isoLocal(sameDay(rec.weightAt, d) ? rec.weightAt : at(d, 7)), lb: rec.weight, day: d });
+      keys.push('wt:' + d);
+    }
+  }
+  return { out, keys };
+}
+function buildExport(mark) {
+  if (!data.settings.share?.enabled) return { error: 'Sending to Apple Health is turned off in Workout Tracker settings.' };
+  const { out, keys } = exportCandidates();
+  const count = keys.length;
+  if (mark && count) {
+    const now = Date.now();
+    for (const k of keys) data.exportLog[k] = now;
+    data.settings.lastExport = now;
+    save();
+    refreshHealthCard();
+    toast(`Sent ${count} item${count === 1 ? '' : 's'} to Apple Health`);
+  }
+  return { ...out, count };
+}
+function pendingSummary() {
+  const { out } = exportCandidates();
+  const parts = [[out.workouts.length, 'workout'], [out.cardio.length, 'cardio session'], [out.food.length, 'day of food', 'days of food'], [out.weights.length, 'weigh-in']]
+    .filter(([n]) => n).map(([n, one, many]) => `${n} ${n === 1 ? one : many || one + 's'}`);
+  return parts.length ? parts.join(', ') : 'nothing new';
+}
+function shareSection(url, key) {
+  const sh = data.settings.share, wifi = data.settings.sync?.enabled;
+  const exportUrl = url.replace(/\/health$/, '/export') + `?key=${key || 'YOUR-KEY'}`;
+  const last = data.settings.lastExport ? new Date(data.settings.lastExport).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
+  const opt = (k, label) => `<label class="check-opt"><input type="checkbox" data-share="${k}" ${sh[k] ? 'checked' : ''}><span>${label}</span></label>`;
+  return `<div class="share-box">
+    <label class="toggle"><input type="checkbox" data-share="enabled" ${sh.enabled ? 'checked' : ''}><span><b>Send my workouts and food to Apple Health</b><small>An Apple Shortcut on your iPhone picks up anything new and saves it into Health. Each item is sent once.</small></span></label>
+    ${sh.enabled ? `
+      ${!wifi ? '<p class="sync-status bad">Turn on Sync over Wi-Fi above. Sending uses the same connection.</p>' : ''}
+      <div class="check-opts">${opt('workouts', 'Lifting sessions (Strength Training)')}${opt('cardio', 'Beat Saber (Mixed Cardio)')}${opt('food', 'Daily food: calories, protein, carbs, fat, fiber, sugar, sodium')}${opt('weight', 'Weigh-ins you enter here')}${opt('calories', 'Include calories burned in workouts')}</div>
+      <p class="hint">Waiting to send: <b>${esc(pendingSummary())}</b>.${last ? ` Last sent ${esc(last)}.` : ''} Today's food is sent after <input class="mini-time" type="time" data-share="foodAfter" value="${esc(sh.foodAfter)}">. If you wear an Apple Watch while training, turn off "Include calories burned" so they aren't counted twice.</p>
+      <div class="row-gap wrap"><button class="btn btn-small btn-ghost" data-action="resend-week">Send the last 7 days again</button></div>
+      <details class="howto"><summary>Set up the "Save to Apple Health" Shortcut</summary>
+        <ol>
+          <li>In <b>Shortcuts</b>, make a new shortcut named Save to Apple Health.</li>
+          <li><b>Get Contents of URL</b>: <code>${esc(exportUrl)}</code> (method GET).</li>
+          <li><b>Get Dictionary Value</b>: Value for <code>workouts</code> in Contents of URL. Then <b>Repeat with Each</b> item in it. Inside the repeat, add three <b>Get Dictionary Value</b> actions on Repeat Item for <code>start</code>, <code>minutes</code> and <code>kcal</code>, then <b>Log Workout</b>: type Traditional Strength Training, Start Date = start, Duration = minutes (min), Calories = kcal (kcal).</li>
+          <li>Do the same for <code>cardio</code> with workout type Mixed Cardio.</li>
+          <li>Repeat over <code>food</code>. Inside, get <code>date</code>, then add <b>Log Health Sample</b> once per item: Dietary Energy = <code>kcal</code>, Protein = <code>protein</code> (g), Carbohydrates = <code>carbs</code> (g), Total Fat = <code>fat</code> (g), Fiber = <code>fiber</code> (g), Dietary Sugar = <code>sugar</code> (g), Sodium = <code>sodium</code> (mg), each with Date = date.</li>
+          <li>Repeat over <code>weights</code>: <b>Log Health Sample</b> Weight = <code>lb</code> (lb), Date = <code>date</code>.</li>
+          <li>Under <b>Automation</b>, run it every night (for example 10 PM) with <b>Run Immediately</b> on. Your phone needs to be on the same Wi-Fi as this PC, with the app open or in the tray.</li>
+        </ol>
+        <p>Test without sending anything: open <code>${esc(exportUrl)}&peek</code> in Safari on your iPhone to see what's waiting.</p>
+      </details>` : ''}
+  </div>`;
+}
+
 function refreshHealthCard() {
   const card = $('#health-card');
   if (card && !card.contains(document.activeElement)) card.innerHTML = healthCard();
@@ -1780,6 +1929,15 @@ function migrate(d) {
   d.program ||= base.program; d.meals ||= base.meals; d.days ||= {}; d.health ||= {};
   d.settings.sync = { ...base.settings.sync, ...(d.settings.sync || {}) };
   d.settings.goals = { ...base.settings.goals, ...(d.settings.goals || {}) };
+  d.settings.share = { ...base.settings.share, ...(d.settings.share || {}) };
+  d.exportLog ||= {};
+  d.settings.breaks ||= [];
+  // One-time: time off the user asked for (Nov 13-26, 2026). Rename or change it in Settings.
+  d.settings.seeded ||= {};
+  if (!d.settings.seeded.timeOff1) {
+    if (!d.settings.breaks.some(b => b.start === '2026-11-13')) d.settings.breaks.push({ id: 'b-nov13', label: 'Time off', start: '2026-11-13', end: '2026-11-26' });
+    d.settings.seeded.timeOff1 = true;
+  }
   // Fill nutrients into meal plans saved before nutrition tracking existed.
   for (const m of d.meals) for (const it of m.items) if (!it.n) it.n = { ...(NUT_BY_NAME[it.name.toLowerCase()]?.n || {}) };
   return d;
@@ -1816,6 +1974,7 @@ const ICON = {
   tick();
   if (window.api?.sync) {
     window.api.sync.onPush(onHealthPush);
+    window.api.sync.onAsk(async (q) => { if (q.kind === 'export') return buildExport(!!q.arg?.mark); return { error: 'Unknown request' }; });
     window.api.sync.onState(st => { ui.sync = st; refreshHealthCard(); });
     applySync();
     if (data.settings.watchDir) window.api.sync.watch(data.settings.watchDir);
