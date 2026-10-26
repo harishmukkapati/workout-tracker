@@ -1,18 +1,18 @@
 {
-  "version": "1.6.0",
+  "version": "1.7.0",
   "minShell": 1,
-  "ref": "b7f6635d17ea3216b4d8490feb3beb6a2244a02e",
-  "notes": "Cloud backup now also saves Workout Tracker Data.xlsx, a readable copy of your whole history.",
+  "ref": "a5e0f3d917e1a82d6ff5f43b32907d5e5ad201aa",
+  "notes": "Goals, real maintenance calories, weight trend, estimated max, left vs right, weekly volume, nutrient trends, swaps, grocery list and water.",
   "files": {
-    "app/app.js": "cbb8d2ed44e0cba7b8167168bda70421138573ba643cec104bd3156e5f28f92b",
+    "app/app.js": "4f4e03ee9c6d7fb53884fa6217f0ae5bcec9e8605e65c53c8c9aebdd034c0765",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
-    "app/styles.css": "0572d85a17b5edf944a3239ddd9801bdacecaf2d598edf56d7bddfa5575266bb",
+    "app/styles.css": "931e5aa3f5ea1cc993f7a8d7c07a5f8483bec0e8b792b72ab686e5615ff0b227",
     "core.js": "0c97b6329c0920c050df99c4313988b16caeeb36a7c0e7677f9cf39788c56d47",
     "preload.js": "d8e9765a90e6e3c24854e3206de75bd08ae03940c6164f6d249a7eb7d1a1caae",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
     "src/xlsx.js": "0ca61e04aeed2908196e8b0c9f057de8087b2ca6c56d943e0db09b77b2458fb1",
-    "version.json": "bd0036c42aedb7eda0f6bd4e2e7e5d0f0cf8c43da2b831fd16141d6484729c3c"
+    "version.json": "b61a942a585bb20f491d4947edd48e92e0673c571e6712596cc158e9e8fbc264"
   }
 }
