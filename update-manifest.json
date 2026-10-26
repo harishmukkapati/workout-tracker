@@ -1,10 +1,10 @@
 {
-  "version": "1.7.1",
+  "version": "1.7.2",
   "minShell": 1,
-  "ref": "1d6397b43948feb41c056efd71ef7d739bc4a701",
-  "notes": "Seated row replaced with a dumbbell pullover (25 lb to start).",
+  "ref": "b704e9842733960bee7673b3f1bdec50f3eef52d",
+  "notes": "Chest and back is now two exercises: floor press and front raise.",
   "files": {
-    "app/app.js": "aa4cdba8abc8c5e41bcde2d2273459bcd4b1e8d5027ee85e8ebba62e0e830fa1",
+    "app/app.js": "e8ecd57b5a17a040ab3fe13a9ce301366b5a096ca58c9a1c3f938a7076ee7b32",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
@@ -13,6 +13,6 @@
     "preload.js": "d8e9765a90e6e3c24854e3206de75bd08ae03940c6164f6d249a7eb7d1a1caae",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
     "src/xlsx.js": "0ca61e04aeed2908196e8b0c9f057de8087b2ca6c56d943e0db09b77b2458fb1",
-    "version.json": "a3a50c1f3da2593ce7da4d015cb4af882e4c5cbdda279010c17ef5cf200b73c2"
+    "version.json": "1141a4c6b7fe7935ddc9f908d7a203dc4cbd037f826a5edcfe127c496ddb6cb6"
   }
 }
