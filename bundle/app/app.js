@@ -140,6 +140,8 @@ function defaultData() {
       threshold: 0.5,
       liftMet: 3.5,
       minPerSetSide: 1.25,
+      dropMin: 0.5,   // extra minutes of work per drop set to failure
+      dropMet: 6,     // vigorous resistance training (Compendium of Physical Activities)
       activityFactor: 1.2,
       healthSources: [],
       sync: { enabled: false, port: 47821, key: null },
@@ -352,12 +354,30 @@ function averageNutrition(days) {
   return { ...nutrition(all), days: logged.length };
 }
 const snap = (it, on, qty) => ({ on, qty: qty ?? it.qty, kcal: it.kcal, protein: it.protein, n: it.n || {}, name: it.name });
+// Drop sets: only the last set of an exercise has one.
+function dropsDone(rec) {
+  let n = 0;
+  for (const e of allExercises()) {
+    if (!e.drop) continue;
+    for (const side of sidesOf(e)) if (cell(rec, e.id, e.sets - 1, side)?.d) n++;
+  }
+  return n;
+}
+// Lifting energy: logged sets at moderate effort, plus drop sets at vigorous effort.
+// With a measured session length, the drop time is already inside it, so only the extra intensity is added.
+function liftEnergy(rec, date, realMinutes) {
+  const s = data.settings, drops = dropsDone(rec), dropTime = drops * (s.dropMin ?? 0.5);
+  const kLift = kcalPerMin(s.liftMet, date), kDrop = kcalPerMin(s.dropMet ?? 6, date);
+  if (realMinutes) return { minutes: realMinutes, kcal: realMinutes * kLift + dropTime * Math.max(0, kDrop - kLift), drops, dropK: dropTime * Math.max(0, kDrop - kLift) };
+  const base = progress(rec).sidesDone * s.minPerSetSide;
+  return { minutes: base + dropTime, kcal: base * kLift + dropTime * kDrop, drops, dropK: dropTime * kDrop };
+}
 function calories(date) {
   const rec = data.days[date], h = data.health[date], s = data.settings;
   const { kcal: inK, protein } = foodTotals(rec);
   const p = progress(rec);
-  const liftMin = p.sidesDone * s.minPerSetSide;
-  const liftK = liftMin * kcalPerMin(s.liftMet, date);
+  const lift = liftEnergy(rec, date);
+  const liftK = lift.kcal;
   let cardioK = 0;
   for (const b of cardioBlocks()) for (const it of b.items) cardioK += (+rec?.cardio?.[it.id]?.min || 0) * kcalPerMin(it.met || 6, date);
   const b = bmr(date);
@@ -366,7 +386,7 @@ function calories(date) {
   else if (h?.total) { out = h.total; basis = `From ${h.source || 'imported data'}`; }
   else if (h?.active && (h.basal || b)) { out = (h.basal || b) + h.active; basis = `Active energy from ${h.source || 'imported data'}`; }
   else if (b) { out = b * s.activityFactor + liftK + cardioK; basis = 'Estimated from your profile and logged training'; }
-  return { inK, protein, out, basis, liftK, cardioK, bmr: b, net: out != null ? inK - out : null, steps: h?.steps };
+  return { inK, protein, out, basis, liftK, cardioK, drops: lift.drops, dropK: lift.dropK, bmr: b, net: out != null ? inK - out : null, steps: h?.steps };
 }
 
 // ======================================================================
@@ -664,7 +684,7 @@ function sideRow(date, e, i, side, rec) {
     <div class="reps" role="group" aria-label="Reps">${dots}<button class="rep-more" data-action="rep-more" aria-label="Add a rep">+</button></div>
     <span class="rep-num">${c.r || 0}</span>
     <label class="wt"><input type="number" inputmode="decimal" min="0" step="2.5" value="${c.w ?? ''}" placeholder="${ph}" data-input="weight" aria-label="Weight in pounds"><span>lb</span></label>
-    ${e.drop ? (i === e.sets - 1 ? `<button class="drop ${c.d ? 'on' : ''}" data-action="drop" title="Dropset to failure done">Drop</button>` : '<span class="drop drop-spacer" aria-hidden="true">Drop</span>') : ''}
+    ${e.drop ? (i === e.sets - 1 ? `<button class="drop ${c.d ? 'on' : ''}" data-action="drop" title="Drop set to failure done (about ${num((data.settings.dropMin ?? 0.5) * kcalPerMin(data.settings.dropMet ?? 6, date))} extra kcal)">Drop</button>` : '<span class="drop drop-spacer" aria-hidden="true">Drop</span>') : ''}
     <button class="check ${c.c ? 'on' : ''}" data-action="check" aria-label="Mark ${SIDE_LABEL[side].toLowerCase()} side done">${ICON.check}</button>
   </div>`;
 }
@@ -717,7 +737,7 @@ function caloriesCard(date, cal) {
     <div class="cal-bar"><span style="width:${Math.min(pct, 1) * 100}%"></span>${pct > 1 ? `<i style="left:${100 / pct}%"></i>` : ''}</div>
     <p class="hint">${needsProfile
       ? 'Add your age and height in Settings, and log your weight, to estimate calories out.'
-      : esc(cal.basis) + (cal.liftK || cal.cardioK ? `. Lifting ≈ ${num(cal.liftK)}, cardio ≈ ${num(cal.cardioK)} kcal.` : '.')}
+      : esc(cal.basis) + (cal.liftK || cal.cardioK ? `. Lifting ≈ ${num(cal.liftK)}${cal.drops ? ` (${num(cal.dropK)} from ${cal.drops} drop set${cal.drops === 1 ? '' : 's'})` : ''}, cardio ≈ ${num(cal.cardioK)} kcal.` : '.')}
       ${cal.steps ? ` ${num(cal.steps)} steps.` : ''}</p>
     ${ui.editOut === date ? `<div class="inline-form"><input type="number" data-input="out-override" value="${rec?.outOverride || ''}" placeholder="Total kcal out"><button class="btn btn-small" data-action="save-out">Save</button><button class="btn btn-ghost btn-small" data-action="clear-out">Use estimate</button></div>` : ''}
   </section>`;
@@ -1194,8 +1214,9 @@ function viewSettings() {
         <label class="field"><span>Age</span><input type="number" data-set="age" value="${p.age ?? ''}"></label>
         <label class="field"><span>Height (ft)</span><input type="number" data-set="ft" value="${ft}"></label>
         <label class="field"><span>Height (in)</span><input type="number" step="0.5" data-set="in" value="${inch}"></label>
+        <label class="field"><span>Extra work per drop set (minutes)</span><input type="number" step="0.25" min="0" data-set="dropMin" value="${s.dropMin ?? 0.5}"></label>
       </div>
-      <p class="hint">Calories out = resting burn (Mifflin-St Jeor) × ${s.activityFactor} for daily life, plus lifting and cardio from what you log. Imported fitness data replaces the estimate on days it covers.</p>
+      <p class="hint">Calories out = resting burn (Mifflin-St Jeor) × ${s.activityFactor} for daily life, plus lifting (each logged set side ≈ ${s.minPerSetSide} min at moderate effort, each drop set ≈ ${s.dropMin ?? 0.5} min at vigorous effort) and cardio from what you log. Imported fitness data replaces the estimate on days it covers.</p>
     </section>
 
     <section class="card"><header class="card-head"><h2>Schedule</h2></header>
@@ -1639,6 +1660,7 @@ document.addEventListener('change', (e) => {
     }
     if (sk === 'startDate' && el.value) s.startDate = el.value;
     if (sk === 'threshold') s.threshold = +el.value;
+    if (sk === 'dropMin') s.dropMin = Math.max(0, +el.value || 0);
     if (sk === 'remOn') s.reminder.on = el.checked;
     if (sk === 'remTime') s.reminder.time = el.value;
     if (sk === 'login') { window.api?.loginItem(el.checked); return; }
@@ -1764,10 +1786,12 @@ function exportCandidates() {
     if (p.sidesDone > 0) {
       const start = sameDay(rec.startedAt, d) ? rec.startedAt : at(d, 12);
       const real = sameDay(rec.finishedAt, d) ? (rec.finishedAt - start) / 60000 : null;
-      const minutes = Math.round(real && real >= 10 && real <= 240 ? real : Math.max(10, p.sidesDone * data.settings.minPerSetSide));
+      const measured = real && real >= 10 && real <= 240 ? real : null;
+      const energy = liftEnergy(rec, d, measured);
+      const minutes = Math.round(Math.max(10, energy.minutes));
       liftEnd = start + minutes * 60000;
       if (sh.workouts && finished && !log['w:' + d]) {
-        out.workouts.push({ start: isoLocal(start), minutes, kcal: sh.calories ? Math.round(minutes * kcalPerMin(data.settings.liftMet, d)) : 0, day: d });
+        out.workouts.push({ start: isoLocal(start), minutes, kcal: sh.calories ? Math.round(energy.kcal) : 0, day: d });
         keys.push('w:' + d);
       }
     }

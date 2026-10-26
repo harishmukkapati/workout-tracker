@@ -1,6 +1,6 @@
 {
-  "version": "1.4.0",
+  "version": "1.4.1",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Pixel colors, planned time off, drop sets on the last set only, and sending workouts and food to Apple Health."
+  "notes": "Drop sets now count toward your calorie estimate (about 4 kcal each)."
 }
