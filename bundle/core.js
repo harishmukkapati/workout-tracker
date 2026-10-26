@@ -74,7 +74,58 @@ exports.start = function start(ctx) {
       const files = fs.readdirSync(backupDir()).filter(f => f.endsWith('.json')).sort();
       while (files.length > 30) fs.unlinkSync(path.join(backupDir(), files.shift()));
     } catch {}
+    lastJson = json;
+    cloudBackup(false);
     return true;
+  });
+
+  // ---------- cloud backup (OneDrive / iCloud Drive folder) ----------
+  // Writes "Workout Tracker Backups/latest.json" plus one file per day (last 60 kept).
+  // Throttled to every 10 minutes while you use the app, and once more when it quits.
+  let lastJson = null, cloudDir = null, cloudAt = 0;
+  let cloudState = { dir: null, lastAt: null, error: null };
+  const cloudFolder = () => path.join(cloudDir, 'Workout Tracker Backups');
+  function cloudBackup(force) {
+    if (!cloudDir || !lastJson) return;
+    if (!force && Date.now() - cloudAt < 10 * 60 * 1000) return;
+    try {
+      fs.mkdirSync(cloudFolder(), { recursive: true });
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(cloudFolder(), 'latest.json.tmp'), lastJson);
+      fs.renameSync(path.join(cloudFolder(), 'latest.json.tmp'), path.join(cloudFolder(), 'latest.json'));
+      fs.writeFileSync(path.join(cloudFolder(), `data-${today}.json`), lastJson);
+      const files = fs.readdirSync(cloudFolder()).filter(f => /^data-\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort();
+      while (files.length > 60) fs.unlinkSync(path.join(cloudFolder(), files.shift()));
+      cloudAt = Date.now();
+      cloudState = { dir: cloudDir, lastAt: cloudAt, error: null };
+    } catch (err) {
+      cloudState = { dir: cloudDir, lastAt: cloudState.lastAt, error: err.message };
+    }
+    if (win && !win.isDestroyed()) win.webContents.send('backup:state', cloudState);
+  }
+  app.on('before-quit', () => cloudBackup(true));
+  handle('backup:configure', (_e, dir) => {
+    cloudDir = dir && fs.existsSync(dir) ? dir : null;
+    cloudState = { dir: cloudDir, lastAt: null, error: dir && !cloudDir ? 'That folder no longer exists.' : null };
+    if (!lastJson) { try { lastJson = fs.readFileSync(dataFile(), 'utf8'); } catch {} }
+    cloudBackup(true);
+    return cloudState;
+  });
+  handle('backup:now', () => { cloudBackup(true); return cloudState; });
+  // Likely cloud folders on this PC, so setup is one click.
+  handle('backup:suggest', () => {
+    const home = app.getPath('home');
+    const c = [
+      ['OneDrive', process.env.OneDrive], ['OneDrive', process.env.OneDriveConsumer], ['OneDrive', path.join(home, 'OneDrive')],
+      ['iCloud Drive', path.join(home, 'iCloudDrive')], ['Google Drive', path.join(home, 'Google Drive')], ['Dropbox', path.join(home, 'Dropbox')],
+    ];
+    const seen = new Set(), out = [];
+    for (const [name, dir] of c) { if (dir && !seen.has(dir) && fs.existsSync(dir)) { seen.add(dir); out.push({ name, dir }); } }
+    return out;
+  });
+  handle('backup:pick', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, { title: 'Choose a cloud folder for backups', properties: ['openDirectory', 'createDirectory'] });
+    return canceled ? null : filePaths[0];
   });
 
   handle('data:export', async (_e, data) => {

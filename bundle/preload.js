@@ -28,6 +28,13 @@ contextBridge.exposeInMainWorld('api', {
     }),
   },
   background: (on) => ipcRenderer.invoke('sys:background', on),
+  backup: {
+    configure: (dir) => ipcRenderer.invoke('backup:configure', dir),
+    now: () => ipcRenderer.invoke('backup:now'),
+    suggest: () => ipcRenderer.invoke('backup:suggest'),
+    pick: () => ipcRenderer.invoke('backup:pick'),
+    onState: (cb) => ipcRenderer.on('backup:state', (_e, s) => cb(s)),
+  },
   update: {
     get: () => ipcRenderer.invoke('update:get'),
     check: () => ipcRenderer.invoke('update:check'),

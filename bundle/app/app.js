@@ -140,6 +140,7 @@ function defaultData() {
       threshold: 0.5,
       liftMet: 3.5,
       minPerSetSide: 1.25,
+      weightStep: 5,  // lb added when you're ready to go up
       dropMin: 0.5,   // extra minutes of work per drop set to failure
       dropMet: 6,     // vigorous resistance training (Compendium of Physical Activities)
       activityFactor: 1.2,
@@ -244,7 +245,7 @@ function schedule() {
     for (let d = s.startDate; d <= end; d = addDays(d, 1)) {
       if (resets.has(d)) anchor = d;
       const br = breakOn(d);
-      if (br) { out[d] = { day: 0, kind: 'off', status: 'off', label: br.label || 'Time off', until: br.end }; anchor = addDays(d, 1); continue; }
+      if (br) { out[d] = { day: 0, kind: 'off', status: 'off', label: br.label || 'Time off', until: br.end, breakId: br.id }; anchor = addDays(d, 1); continue; }
       const idx = mod(diffDays(anchor, d), L);
       const kind = s.cycle[idx];
       const rec = data.days[d];
@@ -404,9 +405,55 @@ function lastSession(exId, before) {
   return null;
 }
 function suggestWeight(e, date, i, side) {
+  const prog = progression(e, date);
+  if (prog?.kind === 'up') return prog.to;
   const last = lastSession(e.id, date);
   const c = last?.sets?.[i]?.[side] || last?.sets?.[i]?.L || last?.sets?.[i]?.B;
   return c?.w ?? e.wMin ?? '';
+}
+// Logged sessions of one exercise before a date, newest first.
+function sessionsOf(exId, before, limit = 6) {
+  const out = [], ds = loggedDates();
+  for (let i = ds.length - 1; i >= 0 && out.length < limit; i--) {
+    const d = ds[i];
+    if (d >= before) continue;
+    const arr = data.days[d].sets?.[exId];
+    if (arr && arr.some(r => r && Object.values(r).some(c => c?.c))) out.push({ date: d, sets: arr });
+  }
+  return out;
+}
+// Double progression: once every set hits the top of the rep range, go up one weight jump.
+function progression(e, date) {
+  return memoize(`prog:${e.id}:${date}`, () => {
+    const ss = sessionsOf(e.id, date);
+    if (!ss.length) return null;
+    const last = ss[0], top = e.repMax || e.repMin || 0;
+    let allTop = true, below = false;
+    const weights = [];
+    for (let i = 0; i < e.sets; i++) for (const side of sidesOf(e)) {
+      const c = last.sets?.[i]?.[side];
+      if (!c?.c) { allTop = false; continue; }
+      if ((+c.r || 0) < top) allTop = false;
+      if ((+c.r || 0) < (e.repMin || 0)) below = true;
+      if (c.w != null && c.w !== '') weights.push(+c.w);
+    }
+    if (!weights.length) return null;
+    const w = Math.max(...weights);
+    const step = +data.settings.weightStep || 5;
+    const reps = sessionTop(last.sets).reps.join('/');
+    if (allTop) return { kind: 'up', from: w, to: w + step, reps, date: last.date };
+    // Stuck: same weight for 3 sessions and the total reps stopped climbing.
+    const three = ss.slice(0, 3), repSum = (x) => sessionTop(x.sets).reps.reduce((a, r) => a + (+r || 0), 0);
+    if (three.length === 3 && three.every(x => sessionTop(x.sets).top === w) && repSum(three[0]) <= repSum(three[2])) return { kind: 'stuck', at: w, reps, date: last.date };
+    return { kind: below ? 'hold' : 'build', at: w, target: top, reps, date: last.date };
+  });
+}
+function progressChip(e, date) {
+  const p = progression(e, date);
+  if (!p) return '';
+  if (p.kind === 'up') return `<span class="prog-chip up">Ready to go up: ${p.to} lb today</span>`;
+  if (p.kind === 'stuck') return `<span class="prog-chip stuck">Same ${p.at} lb for 3 sessions. Chase one more rep per set.</span>`;
+  return `<span class="prog-chip build">${p.target} reps on every set at ${p.at} lb, then go up</span>`;
 }
 function sessionTop(arr) {
   let top = 0, vol = 0, reps = [];
@@ -527,6 +574,7 @@ function viewToday() {
         </div>
       </div>
     </header>
+    ${date === todayStr() ? backupNudge() : ''}
     ${nudge(date, sc, p)}
     <div class="cols">
       <section class="workout-col" aria-label="Workout">
@@ -576,7 +624,8 @@ function workoutSection(date, sc, rec, p, isFuture, isPast) {
           <p>No workouts until ${esc(longDate(addDays(sc.until, 1), { weekday: 'long', month: 'long', day: 'numeric' }))}. ${left === 1 ? 'Last day off.' : `${left} days to go, counting today.`} These days don't count as misses or break your streak. Keep logging food and protein; it helps you recover.</p>
           <div class="row-gap"><button class="btn btn-small" data-action="edit-breaks">Edit time off</button></div>
         </div>
-      </div>`;
+      </div>
+      ${recoveryCard(date, sc)}`;
   } else if (sc.kind === 'before') {
     return `<div class="rest-card"><div><h2>Before your plan</h2><p>Your plan starts ${esc(longDate(data.settings.startDate))}. Change the start date in Settings.</p></div></div>`;
   }
@@ -597,6 +646,41 @@ function workoutSection(date, sc, rec, p, isFuture, isPast) {
       </div>
     </div>`;
   return pre + `<div class="blocks ${isFuture ? 'readonly' : ''}">${blocks}</div>` + finish;
+}
+
+// ---------- Recovery checklist (time off) ----------
+const PAIN_COLORS = ['#35A174', '#4BA86F', '#6AAE62', '#8FB352', '#B3B444', '#C9A815', '#D9902A', '#E07A3C', '#E0604E', '#D9485E', '#C4314B'];
+function recoveryCard(date, sc) {
+  const br = (data.settings.breaks || []).find(b => b.id === sc.breakId);
+  if (!br) return '';
+  const items = br.items || [], rec = data.days[date], done = rec?.rehab || {};
+  const editing = ui.rehabEdit === br.id || !items.length;
+  const future = date > todayStr();
+  const total = items.reduce((a, it) => a + (+it.times || 1), 0), got = items.reduce((a, it) => a + Math.min(+done[it.id] || 0, +it.times || 1), 0);
+  const list = items.map(it => {
+    const times = +it.times || 1, n = Math.min(+done[it.id] || 0, times);
+    return `<li class="rehab ${n >= times ? 'complete' : ''}" data-rehab="${it.id}">
+      <div class="rehab-text"><b>${esc(it.name)}</b>${it.detail ? `<small>${esc(it.detail)}</small>` : ''}</div>
+      <div class="rehab-ticks">${Array.from({ length: times }, (_, k) => `<button class="check ${k < n ? 'on' : ''}" data-action="rehab" data-n="${k + 1}" ${future ? 'disabled' : ''} aria-label="${esc(it.name)}, ${k + 1} of ${times}">${ICON.check}</button>`).join('')}</div>
+      ${editing ? `<button class="icon-btn sm" data-action="rehab-del" aria-label="Remove">${ICON.x}</button>` : ''}
+    </li>`;
+  }).join('');
+  return `<section class="card recovery-card">
+    <header class="card-head"><h2>Recovery checklist</h2>${items.length ? `<span class="block-count">${got}/${total}</span>` : ''}</header>
+    ${items.length ? `<ul class="rehab-list">${list}</ul>` : `<p class="hint">Add the exercises your physical therapist gives you, with how many times a day. They show up here to check off every day of your time off.</p>`}
+    ${editing ? `<form class="rehab-add" data-form="rehab" data-break="${br.id}">
+        <input name="name" placeholder="Exercise (e.g. quad sets)" required aria-label="Exercise">
+        <input name="detail" placeholder="Details (e.g. 3 x 10, hold 5 s)" aria-label="Details">
+        <label class="wt"><input name="times" type="number" min="1" max="12" value="1" aria-label="Times a day"><span>/day</span></label>
+        <button class="btn btn-small" type="submit">Add</button>
+      </form>` : ''}
+    ${items.length ? `<button class="link-btn" data-action="rehab-edit" data-break="${br.id}">${editing ? 'Done editing' : 'Edit list'}</button>` : ''}
+    ${!future ? `<div class="pain">
+      <span>Pain today</span>
+      <div class="pain-scale">${PAIN_COLORS.map((c, k) => `<button class="pain-dot ${rec?.pain === k ? 'on' : ''}" style="--pc:${c}" data-action="pain" data-n="${k}" aria-label="Pain ${k} of 10">${k}</button>`).join('')}</div>
+    </div>
+    <label class="field"><span>Notes for your PT</span><textarea rows="2" data-input="rehab-note" placeholder="Swelling, range of motion, how the knee felt">${esc(rec?.rehabNote || '')}</textarea></label>` : ''}
+  </section>`;
 }
 
 function missCard(date, rec) {
@@ -653,12 +737,12 @@ function exerciseRow(date, e, rec) {
   <article class="ex ${complete ? 'complete' : ''} ${open ? 'open' : ''}" data-ex="${e.id}">
     <button class="ex-head" data-action="toggle-ex" data-ex="${e.id}" aria-expanded="${open}">
       <span class="ex-check">${complete ? ICON.check : ''}</span>
-      <span class="ex-text"><span class="ex-name">${esc(e.name)}</span><span class="ex-meta">${esc(meta)}</span></span>
+      <span class="ex-text"><span class="ex-name">${esc(e.name)}</span><span class="ex-meta">${esc(meta)}</span>${progression(e, date)?.kind === 'up' && !complete ? `<span class="up-flag">Go up to ${progression(e, date).to} lb</span>` : ''}</span>
       <span class="ex-count">${p.d}/${p.t}</span>
       <span class="chev">${ICON.down}</span>
     </button>
     <div class="ex-body">
-      ${lastTxt ? `<p class="last">${esc(lastTxt)}</p>` : ''}
+      ${lastTxt || progressChip(e, date) ? `<div class="last-row">${lastTxt ? `<p class="last">${esc(lastTxt)}</p>` : ''}${progressChip(e, date)}</div>` : ''}
       ${rows}
       <div class="ex-note">
         ${noteOpen
@@ -955,6 +1039,10 @@ function viewProgress() {
     <header class="page-head"><h1>Progress</h1><p>Body weight, strength and calories over time.</p></header>
     <div class="row-gap range">${ranges.map(([v, l]) => `<button class="chip ${ui.range === v ? 'chip-on' : ''}" data-action="range" data-v="${v}">${l}</button>`).join('')}</div>
     <div class="prog-grid">
+      <section class="card span-2">
+        <header class="card-head"><h2>Lifts</h2><span class="hint">Go up ${+data.settings.weightStep || 5} lb once every set reaches the top of its rep range</span></header>
+        ${liftsTable()}
+      </section>
       <section class="card">
         <header class="card-head"><h2>Body weight</h2><div class="inline-form"><label class="wt"><input type="number" step="0.1" data-input="quick-weight" placeholder="0.0" aria-label="Today's weight"><span>lb</span></label></div></header>
         <div class="chart" data-chart="weight"></div>
@@ -974,6 +1062,18 @@ function viewProgress() {
       </section>
     </div>
   </div>`;
+}
+function liftsTable() {
+  const t = addDays(todayStr(), 1);
+  const rows = liftBlocks().flatMap(b => b.exercises.map(e => {
+    const p = progression(e, t);
+    const status = !p ? '<span class="prog-chip none">No weights logged yet</span>'
+      : p.kind === 'up' ? `<span class="prog-chip up">Ready: ${p.to} lb next time</span>`
+      : p.kind === 'stuck' ? '<span class="prog-chip stuck">Stuck for 3 sessions</span>'
+      : `<span class="prog-chip build">Building to ${p.target} reps</span>`;
+    return `<tr class="hue-${b.hue}"><td><i class="dot"></i>${esc(e.name)}</td><td>${p ? (p.from ?? p.at) + ' lb' : '–'}</td><td>${p?.reps || '–'}</td><td>${e.repMin}–${e.repMax}</td><td>${status}</td></tr>`;
+  })).join('');
+  return `<table class="lifts"><thead><tr><th>Exercise</th><th>Working weight</th><th>Last reps</th><th>Range</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 function rangeStart() { return ui.range ? addDays(todayStr(), -ui.range + 1) : '0000-00-00'; }
 function exSessions(exId) {
@@ -1166,12 +1266,15 @@ function viewHistory() {
   const rows = dates.map(d => {
     const s = sc[d], rec = data.days[d], p = progress(rec), c = calories(d);
     const r = rec?.miss?.reason ? reasonOf(rec.miss.reason) : null;
-    const notes = [rec?.note, ...Object.entries(rec?.exNotes || {}).filter(([, v]) => v).map(([k, v]) => `${allExercises().find(e => e.id === k)?.name || k}: ${v}`), rec?.miss?.note].filter(Boolean);
+    const brk = s.kind === 'off' ? (data.settings.breaks || []).find(b => b.id === s.breakId) : null;
+    const rehabTotal = brk ? (brk.items || []).reduce((a, it) => a + (+it.times || 1), 0) : 0;
+    const rehabDone = brk ? (brk.items || []).reduce((a, it) => a + Math.min(+rec?.rehab?.[it.id] || 0, +it.times || 1), 0) : 0;
+    const notes = [rec?.rehabNote, rec?.note, ...Object.entries(rec?.exNotes || {}).filter(([, v]) => v).map(([k, v]) => `${allExercises().find(e => e.id === k)?.name || k}: ${v}`), rec?.miss?.note].filter(Boolean);
     const status = { done: 'Done', extra: 'Bonus', missed: 'Missed', rest: 'Rest', today: 'Today', off: 'Time off' }[s.status] || s.status;
     return `<button class="hist-row" data-action="open-day" data-date="${d}">
       <span class="h-date"><b>${esc(longDate(d, { weekday: 'short', month: 'short', day: 'numeric' }))}</b><small>${s.kind === 'rest' ? 'Rest day' : s.kind === 'off' ? esc(s.label) : 'Day ' + s.day}</small></span>
       <span class="pill st-${s.status}">${status}</span>
-      <span class="h-work">${p.done ? `<span class="mini-bar"><i style="width:${p.pct * 100}%"></i></span>${Math.round(p.pct * 100)}%` : r ? `<span class="reason-dot" style="--rc:${r.color}">${r.label}</span>` : ''}</span>
+      <span class="h-work">${rehabTotal ? `<span class="mini-bar rehab-bar"><i style="width:${rehabDone / rehabTotal * 100}%"></i></span>${rehabDone}/${rehabTotal}${rec?.pain != null ? `, pain ${rec.pain}` : ''}` : p.done ? `<span class="mini-bar"><i style="width:${p.pct * 100}%"></i></span>${Math.round(p.pct * 100)}%` : r ? `<span class="reason-dot" style="--rc:${r.color}">${r.label}</span>` : ''}</span>
       <span class="h-cal">${c.inK ? num(c.inK) + ' in' : ''}${c.out && c.inK ? ' / ' + num(c.out) + ' out' : ''}</span>
       <span class="h-w">${weightOn(d) ? weightOn(d) + ' lb' : ''}</span>
       <span class="h-notes">${esc(notes.join('  |  '))}</span>
@@ -1244,10 +1347,12 @@ function viewSettings() {
 
     <section class="card" id="health-card">${healthCard()}</section>
 
-    <section class="card"><header class="card-head"><h2>Workout plan</h2></header>${progEditor}</section>
+    <section class="card"><header class="card-head"><h2>Workout plan</h2><label class="field inline-field"><span>Weight jump</span><span class="wt"><input type="number" step="2.5" min="1" data-set="weightStep" value="${+s.weightStep || 5}"><span>lb</span></span></label></header>${progEditor}</section>
     <section class="card"><header class="card-head"><h2>Meal plan</h2></header><p class="hint">Numbers are per unit. Defaults come from your product labels and USDA data. Click More on any food for vitamins and minerals, and adjust them to match what you buy.</p>${mealEditor}</section>
 
     <section class="card" id="update-card">${updateCard()}</section>
+
+    <section class="card" id="backup-card">${backupCard()}</section>
 
     <section class="card"><header class="card-head"><h2>Look and data</h2></header>
       <div class="row-gap wrap">
@@ -1508,6 +1613,26 @@ document.addEventListener('click', async (e) => {
       (navigator.clipboard?.writeText(t) || Promise.reject()).then(() => toast('Copied')).catch(() => toast(t));
       return;
     }
+    case 'rehab': {
+      const id = a.closest('[data-rehab]').dataset.rehab, n = +a.dataset.n, r = getDay(date);
+      r.rehab ||= {};
+      r.rehab[id] = (+r.rehab[id] || 0) === n ? n - 1 : n;
+      if (r.rehab[id] >= n) ui.pop = `[data-rehab="${id}"] .check:nth-child(${n})`;
+      break;
+    }
+    case 'pain': { const r = getDay(date); r.pain = r.pain === +a.dataset.n ? undefined : +a.dataset.n; break; }
+    case 'rehab-edit': ui.rehabEdit = ui.rehabEdit === a.dataset.break ? null : a.dataset.break; return render();
+    case 'rehab-del': {
+      const id = a.closest('[data-rehab]').dataset.rehab;
+      if (!confirmInline(a)) return;
+      for (const b of data.settings.breaks || []) b.items = (b.items || []).filter(it => it.id !== id);
+      break;
+    }
+    case 'backup-use': setBackupDir(a.dataset.dir); return;
+    case 'backup-pick': { const dir = await window.api?.backup?.pick(); if (dir) setBackupDir(dir); return; }
+    case 'backup-off': setBackupDir(null); return;
+    case 'backup-now': window.api?.backup?.now().then(st => { ui.backup = st; refreshBackupCard(); toast(st.error ? st.error : 'Backed up'); }); return;
+    case 'backup-nudge-off': data.settings.backupNudgeOff = true; break;
     case 'add-break': { const t = todayStr(); (data.settings.breaks ||= []).push({ id: 'b-' + uid(), label: 'Time off', start: t, end: addDays(t, 6) }); break; }
     case 'del-break': { if (!confirmInline(a)) return; data.settings.breaks = (data.settings.breaks || []).filter(b => b.id !== a.dataset.id); break; }
     case 'edit-breaks': go('settings'); setTimeout(() => $('#breaks')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50); return;
@@ -1605,6 +1730,7 @@ document.addEventListener('input', (e) => {
   if (!k) return;
   if (k === 'day-note') { getDay(date).note = el.value; save(); }
   if (k === 'ex-note') { getDay(date).exNotes[el.dataset.ex] = el.value; save(); }
+  if (k === 'rehab-note') { getDay(date).rehabNote = el.value; save(); }
   if (k === 'miss-note') { const r = getDay(date); r.miss = { ...(r.miss || {}), note: el.value }; save(); }
 });
 document.addEventListener('change', (e) => {
@@ -1661,6 +1787,7 @@ document.addEventListener('change', (e) => {
     if (sk === 'startDate' && el.value) s.startDate = el.value;
     if (sk === 'threshold') s.threshold = +el.value;
     if (sk === 'dropMin') s.dropMin = Math.max(0, +el.value || 0);
+    if (sk === 'weightStep') s.weightStep = Math.max(1, +el.value || 5);
     if (sk === 'remOn') s.reminder.on = el.checked;
     if (sk === 'remTime') s.reminder.time = el.value;
     if (sk === 'login') { window.api?.loginItem(el.checked); return; }
@@ -1681,6 +1808,15 @@ document.addEventListener('change', (e) => {
 });
 document.addEventListener('submit', (e) => {
   const f = e.target;
+  if (f.dataset.form === 'rehab') {
+    e.preventDefault();
+    const fd = new FormData(f), br = (data.settings.breaks || []).find(b => b.id === f.dataset.break);
+    if (!br) return;
+    (br.items ||= []).push({ id: 'r-' + uid(), name: String(fd.get('name')).trim(), detail: String(fd.get('detail') || '').trim(), times: clamp(+fd.get('times') || 1, 1, 12) });
+    ui.rehabEdit = br.id; save(); render();
+    $('.rehab-add input[name="name"]')?.focus();
+    return;
+  }
   if (f.dataset.form !== 'custom') return;
   e.preventDefault();
   const fd = new FormData(f);
@@ -1694,6 +1830,32 @@ document.addEventListener('keydown', (e) => {
   const sib = e.key === 'ArrowRight' ? r.nextElementSibling : r.previousElementSibling;
   if (sib?.classList.contains('rep')) { e.preventDefault(); sib.focus(); }
 });
+
+// ======================================================================
+// Cloud backup
+// ======================================================================
+function backupCard() {
+  const dir = data.settings.backupDir, st = ui.backup || {}, sug = ui.backupSuggest || [];
+  if (!window.api?.backup) return `<header class="card-head"><h2>Cloud backup</h2></header><p class="hint">Cloud backup works in the desktop app.</p>`;
+  const when = st.lastAt ? new Date(st.lastAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
+  return `<header class="card-head"><h2>Cloud backup</h2>${dir && !st.error ? `<span class="pill ok">${when ? 'Backed up ' + esc(when) : 'On'}</span>` : ''}</header>
+    <p>Keeps a copy of your history in a cloud folder, so a dead drive or a new PC doesn't lose it. Saves every 10 minutes while you use the app, keeps one file per day for 60 days, and <code>latest.json</code> is always current.</p>
+    ${dir ? `<div class="copy-row"><span>Folder</span><code>${esc(dir)}\\Workout Tracker Backups</code><button class="btn btn-small btn-ghost" data-action="backup-off">Turn off</button></div>
+      ${st.error ? `<p class="sync-status bad">${esc(st.error)}</p>` : ''}
+      <div class="row-gap wrap"><button class="btn btn-small" data-action="backup-now">Back up now</button><span class="hint">To restore on another PC, use Restore from backup below and pick latest.json.</span></div>`
+    : `<div class="row-gap wrap">${sug.map(x => `<button class="btn" data-action="backup-use" data-dir="${esc(x.dir)}">Use ${esc(x.name)}</button>`).join('')}<button class="btn ${sug.length ? 'btn-ghost' : ''}" data-action="backup-pick">Choose a folder</button></div>
+      ${sug.length ? '' : '<p class="hint">No OneDrive or iCloud Drive folder found on this PC. Install one of them, or choose any synced folder.</p>'}`}`;
+}
+function refreshBackupCard() { const c = $('#backup-card'); if (c) c.innerHTML = backupCard(); }
+function setBackupDir(dir) {
+  data.settings.backupDir = dir || null; save();
+  window.api?.backup?.configure(dir || null).then(st => { ui.backup = st; refreshBackupCard(); if (dir && !st.error) toast('Cloud backup is on'); render(); });
+}
+function backupNudge() {
+  if (!window.api?.backup || data.settings.backupDir || data.settings.backupNudgeOff) return '';
+  const sug = ui.backupSuggest?.[0];
+  return `<div class="nudge backup-nudge"><span class="nudge-dot"></span><p><b>Your history only lives on this PC.</b> Back it up to ${sug ? esc(sug.name) : 'a cloud folder'} so you never lose it.</p>${sug ? `<button class="btn btn-small" data-action="backup-use" data-dir="${esc(sug.dir)}">Use ${esc(sug.name)}</button>` : `<button class="btn btn-small" data-action="backup-pick">Choose folder</button>`}<button class="btn btn-small btn-ghost" data-action="backup-nudge-off">Not now</button></div>`;
+}
 
 // ======================================================================
 // Apple Health settings card
@@ -1996,6 +2158,11 @@ const ICON = {
   refreshHealth();
   setInterval(tick, 30000);
   tick();
+  if (window.api?.backup) {
+    window.api.backup.onState(st => { ui.backup = st; refreshBackupCard(); });
+    window.api.backup.suggest().then(sg => { ui.backupSuggest = sg; if (ui.view === 'today' || ui.view === 'settings') render(); }).catch(() => {});
+    if (data.settings.backupDir) window.api.backup.configure(data.settings.backupDir).then(st => { ui.backup = st; refreshBackupCard(); });
+  }
   if (window.api?.sync) {
     window.api.sync.onPush(onHealthPush);
     window.api.sync.onAsk(async (q) => { if (q.kind === 'export') return buildExport(!!q.arg?.mark); return { error: 'Unknown request' }; });
