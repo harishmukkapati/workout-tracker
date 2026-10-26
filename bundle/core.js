@@ -38,6 +38,8 @@ exports.start = function start(ctx) {
     win.loadFile(path.join(__dirname, 'app', 'index.html'));
     // Open external links in the default browser, never inside the app.
     win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+    // With "keep syncing in the background" on, closing the window hides it to the tray.
+    win.on('close', (e) => { if (background && !quitting) { e.preventDefault(); win.hide(); } });
     ctx.onWindow?.(win);
   }
 
@@ -98,9 +100,9 @@ exports.start = function start(ctx) {
 
   // ---------- fitness data ----------
   const FILTERS = {
-    apple: [{ name: 'Apple Health export', extensions: ['zip', 'xml'] }],
+    apple: [{ name: 'Apple Health export', extensions: ['zip', 'xml', 'json'] }],
     google: [{ name: 'Google Takeout (Fit)', extensions: ['zip', 'csv'] }],
-    csv: [{ name: 'CSV', extensions: ['csv'] }],
+    csv: [{ name: 'CSV or JSON', extensions: ['csv', 'json'] }],
   };
 
   handle('health:pick', async (_e, kind) => {
@@ -151,4 +153,162 @@ exports.start = function start(ctx) {
   });
 
   handle('sys:info', () => ({ dataDir: dataDir(), version: ctx.version, shellVersion: ctx.shellVersion }));
+
+  // ======================================================================
+  // Apple Health live sync
+  // Two automatic paths, both feed the page through 'health:push':
+  //  1. Wi-Fi: the iPhone (Health Auto Export or a Shortcut) POSTs JSON to http://<this PC>:<port>/health
+  //  2. Folder: watch an iCloud Drive folder the iPhone exports into
+  // ======================================================================
+  const http = require('http');
+  const os = require('os');
+  const inbox = []; // pushes that arrived before the page was ready
+  let pageReady = false;
+  const push = (payload) => {
+    if (pageReady && win && !win.isDestroyed()) win.webContents.send('health:push', payload);
+    else inbox.push(payload);
+  };
+  handle('sync:ready', () => { pageReady = true; const out = inbox.splice(0); return out; });
+
+  const lanAddresses = () => Object.values(os.networkInterfaces()).flat()
+    .filter(a => a && a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.'))
+    .map(a => a.address)
+    .sort((a, b) => (/^192\.168\./.test(b) - /^192\.168\./.test(a)) || (/^10\./.test(b) - /^10\./.test(a)));
+
+  let server = null;
+  let serverCfg = null;
+  let serverState = { listening: false, error: null, port: null, lastAt: null, lastSummary: null, lastFrom: null };
+  const sendSyncState = () => { if (win && !win.isDestroyed()) win.webContents.send('sync:state', syncState()); };
+  const syncState = () => ({ ...serverState, addresses: lanAddresses(), watch: watchState });
+
+  function keyOk(req, url) {
+    const auth = req.headers.authorization || '';
+    const k = url.searchParams.get('key') || req.headers['x-api-key'] || auth.replace(/^Bearer\s+/i, '');
+    return serverCfg?.key && k === serverCfg.key;
+  }
+  function reply(res, code, body, type = 'application/json') {
+    res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+    res.end(type === 'application/json' ? JSON.stringify(body) : body);
+  }
+
+  function startServer(cfg) {
+    stopServer();
+    serverCfg = cfg;
+    if (!cfg?.enabled || !cfg.key) { serverState = { ...serverState, listening: false, error: null, port: null }; return sendSyncState(); }
+    server = http.createServer((req, res) => {
+      const url = new URL(req.url, 'http://local');
+      if (!url.pathname.startsWith('/health') && url.pathname !== '/ping') return reply(res, 404, { ok: false, error: 'Not found' });
+      if (!keyOk(req, url)) return reply(res, 401, { ok: false, error: 'Wrong or missing key' });
+      if (req.method === 'GET') {
+        return reply(res, 200, `<!doctype html><meta name="viewport" content="width=device-width"><body style="font:17px system-ui;padding:32px;color:#1f1f1f"><h2 style="color:#188038">Workout Tracker is reachable</h2><p>Your iPhone can send Apple Health data to this PC. You can close this page.</p>`, 'text/html; charset=utf-8');
+      }
+      if (req.method !== 'POST') return reply(res, 405, { ok: false, error: 'Use POST' });
+      const chunks = []; let size = 0;
+      req.on('data', (c) => { size += c.length; if (size > 50 * 1024 * 1024) { req.destroy(); } else chunks.push(c); });
+      req.on('end', () => {
+        try {
+          const body = Buffer.concat(chunks).toString('utf8');
+          const result = importers.parseHealthJSON(JSON.parse(body));
+          const n = Object.keys(result.days).length;
+          serverState = { ...serverState, lastAt: Date.now(), lastSummary: result.summary, lastFrom: req.socket.remoteAddress };
+          if (n) push({ ...result, via: 'wifi', at: Date.now() });
+          sendSyncState();
+          reply(res, 200, { ok: true, days: n });
+        } catch (err) {
+          serverState = { ...serverState, error: `Last sync failed: ${err.message}` };
+          sendSyncState();
+          reply(res, 400, { ok: false, error: err.message });
+        }
+      });
+    });
+    server.on('error', (err) => {
+      serverState = { ...serverState, listening: false, error: err.code === 'EADDRINUSE' ? `Port ${cfg.port} is in use. Pick another port.` : err.message };
+      sendSyncState();
+    });
+    server.listen(cfg.port || 47821, '0.0.0.0', () => {
+      serverState = { ...serverState, listening: true, error: null, port: cfg.port || 47821 };
+      sendSyncState();
+    });
+  }
+  function stopServer() { if (server) { try { server.close(); } catch {} server = null; } }
+
+  handle('sync:configure', (_e, cfg) => { startServer(cfg); return syncState(); });
+  handle('sync:state', () => syncState());
+
+  // ---------- folder watch (iCloud Drive) ----------
+  const watchFile = () => path.join(dataDir(), 'watch-state.json');
+  let watcher = null, watchTimer = null;
+  let watchState = { dir: null, lastAt: null, lastFile: null, error: null };
+  const seen = () => readJSON(watchFile()) || {};
+
+  async function scanFolder() {
+    const dir = watchState.dir;
+    if (!dir) return;
+    const known = seen();
+    const found = [];
+    const walk = (d, depth) => {
+      let entries = [];
+      try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const full = path.join(d, e.name);
+        if (e.isDirectory() && depth < 3) walk(full, depth + 1);
+        else if (/\.(json|csv)$/i.test(e.name)) { try { found.push({ full, mtime: fs.statSync(full).mtimeMs }); } catch {} }
+      }
+    };
+    walk(dir, 0);
+    found.sort((a, b) => a.mtime - b.mtime);
+    let changed = false;
+    for (const f of found) {
+      if (known[f.full] && known[f.full] >= f.mtime) continue;
+      try {
+        const result = await importers.importFile(/\.csv$/i.test(f.full) ? 'csv' : 'json', f.full);
+        if (Object.keys(result.days).length) push({ ...result, source: 'Apple Health', via: 'folder', at: Date.now() });
+        watchState = { ...watchState, lastAt: Date.now(), lastFile: path.basename(f.full), error: null };
+      } catch (err) {
+        // iCloud may still be downloading the file; try again on the next change.
+        if (!/Unexpected end|JSON/.test(err.message)) watchState = { ...watchState, error: `${path.basename(f.full)}: ${err.message}` };
+        continue;
+      }
+      known[f.full] = f.mtime; changed = true;
+    }
+    if (changed) { try { fs.writeFileSync(watchFile(), JSON.stringify(known)); } catch {} }
+    sendSyncState();
+  }
+  function setWatch(dir) {
+    if (watcher) { try { watcher.close(); } catch {} watcher = null; }
+    watchState = { ...watchState, dir: dir || null, error: null };
+    if (!dir) return sendSyncState();
+    if (!fs.existsSync(dir)) { watchState.error = 'That folder no longer exists.'; return sendSyncState(); }
+    try {
+      watcher = fs.watch(dir, { recursive: true }, () => { clearTimeout(watchTimer); watchTimer = setTimeout(scanFolder, 3000); });
+    } catch (err) { watchState.error = err.message; }
+    scanFolder();
+  }
+  setInterval(() => { if (watchState.dir) scanFolder(); }, 15 * 60 * 1000); // safety net if a change event is missed
+
+  handle('sync:watch', (_e, dir) => { setWatch(dir); return syncState(); });
+  handle('sync:pickFolder', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, { title: 'Choose the folder your iPhone exports to', properties: ['openDirectory'] });
+    return canceled ? null : filePaths[0];
+  });
+
+  // ---------- keep running in the tray ----------
+  const { Tray, Menu, nativeImage } = require('electron');
+  let tray = null, background = false, quitting = false;
+  app.on('before-quit', () => { quitting = true; });
+  function setBackground(on) {
+    background = !!on;
+    if (background && !tray) {
+      tray = new Tray(nativeImage.createFromPath(ctx.iconPath).resize({ width: 16, height: 16 }));
+      tray.setToolTip('Workout Tracker');
+      tray.setContextMenu(Menu.buildFromTemplate([
+        { label: 'Open Workout Tracker', click: () => { win?.show(); win?.focus(); } },
+        { type: 'separator' },
+        { label: 'Quit', click: () => { quitting = true; app.quit(); } },
+      ]));
+      tray.on('click', () => { win?.show(); win?.focus(); });
+    }
+    if (!background && tray) { tray.destroy(); tray = null; }
+  }
+  handle('sys:background', (_e, on) => { setBackground(on); return background; });
 };

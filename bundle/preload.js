@@ -13,6 +13,16 @@ contextBridge.exposeInMainWorld('api', {
   setTheme: (theme) => ipcRenderer.invoke('sys:theme', theme),
   info: () => ipcRenderer.invoke('sys:info'),
   platform: process.platform,
+  sync: {
+    configure: (cfg) => ipcRenderer.invoke('sync:configure', cfg),
+    state: () => ipcRenderer.invoke('sync:state'),
+    watch: (dir) => ipcRenderer.invoke('sync:watch', dir),
+    pickFolder: () => ipcRenderer.invoke('sync:pickFolder'),
+    ready: () => ipcRenderer.invoke('sync:ready'),
+    onPush: (cb) => ipcRenderer.on('health:push', (_e, p) => cb(p)),
+    onState: (cb) => ipcRenderer.on('sync:state', (_e, s) => cb(s)),
+  },
+  background: (on) => ipcRenderer.invoke('sys:background', on),
   update: {
     get: () => ipcRenderer.invoke('update:get'),
     check: () => ipcRenderer.invoke('update:check'),

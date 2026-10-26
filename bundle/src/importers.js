@@ -50,6 +50,7 @@ const APPLE_TYPES = {
   HKQuantityTypeIdentifierBasalEnergyBurned: 'basal',
   HKQuantityTypeIdentifierStepCount: 'steps',
   HKQuantityTypeIdentifierBodyMass: 'weightLb',
+  HKQuantityTypeIdentifierAppleExerciseTime: 'exercise',
 };
 const attr = (line, name) => { const m = line.match(new RegExp(`\\s${name}="([^"]*)"`)); return m ? m[1] : null; };
 
@@ -135,6 +136,9 @@ function mapHeader(h) {
   if (/active (energy|cal)|active_kcal|activity cal|calories burned \(active\)/.test(s)) return { field: 'active', kj: /kj/.test(s) };
   if (/^calories \(kcal\)$|total (energy|cal)|calories[ _]out|^calories burned|total_kcal/.test(s)) return { field: 'total', kj: /kj/.test(s) };
   if (/step/.test(s) && !/max|min/.test(s)) return { field: 'steps' };
+  if (/exercise time|exercise_time|exercise min/.test(s)) return { field: 'exercise' };
+  if (/stand hour|stand_hour/.test(s)) return { field: 'stand' };
+  if (/resting heart|resting_heart/.test(s)) return { field: 'restingHR', avg: true };
   if (/(average weight|^weight|body mass)/.test(s) && !/max|min/.test(s)) return { field: 'weight', kg: /kg/.test(s) };
   return null;
 }
@@ -156,11 +160,12 @@ function rowsToDays(rows) {
       if (!isFinite(v) || v === 0) return;
       if (m.field === 'weight') d.weightLb = Math.round((m.kg ? v * KG_TO_LB : v) * 10) / 10;
       else if (m.field === 'steps') d.steps = Math.round((d.steps || 0) + v);
+      else if (m.avg) d[m.field] = Math.round(v);
       else d[m.field] = Math.round((d[m.field] || 0) + (m.kj ? v * KJ_TO_KCAL : v));
     });
     if (Object.keys(d).length) {
       const prev = days[date] || {};
-      for (const [k, v] of Object.entries(d)) prev[k] = k === 'weightLb' ? v : (prev[k] || 0) + v;
+      for (const [k, v] of Object.entries(d)) prev[k] = k === 'weightLb' || k === 'restingHR' ? v : (prev[k] || 0) + v;
       days[date] = prev;
     }
   }
@@ -188,10 +193,85 @@ async function importGoogle(file) {
   return { days, summary: `${Object.keys(days).length} days`, source: 'Google Fit' };
 }
 
+// ---------- Apple Health JSON (Health Auto Export, or an Apple Shortcut) ----------
+// Health Auto Export sends { data: { metrics: [ { name, units, data: [ { qty, date } ] } ], workouts: [...] } }.
+// A Shortcut can send { date: "2026-10-26", active, basal, steps, exercise, stand, weight } or an array of those.
+const HAE_NAMES = [
+  [/^active_energy$|^active_energy_burned$/, 'active'],
+  [/^basal_energy_burned$|^resting_energy$/, 'basal'],
+  [/^step_count$|^steps$/, 'steps'],
+  [/^weight_body_mass$|^body_mass$|^weight$/, 'weightLb'],
+  [/^apple_exercise_time$|^exercise_time$/, 'exercise'],
+  [/^apple_stand_hour$|^stand_hours?$/, 'stand'],
+  [/^resting_heart_rate$/, 'restingHR'],
+  [/^sleep_analysis$/, 'sleepH'],
+];
+const SIMPLE_KEYS = { active: 'active', activeenergy: 'active', move: 'active', basal: 'basal', resting: 'basal', restingenergy: 'basal', steps: 'steps', exercise: 'exercise', exerciseminutes: 'exercise', stand: 'stand', standhours: 'stand', weight: 'weightLb', weightlb: 'weightLb', weightkg: 'weightKg', restinghr: 'restingHR', restingheartrate: 'restingHR', sleep: 'sleepH', sleephours: 'sleepH', total: 'total' };
+const toNum = (v) => { const n = parseFloat(String(v ?? '').replace(/,/g, '')); return isFinite(n) ? n : null; };
+
+function parseHealthJSON(obj) {
+  const days = {};
+  const put = (date, k, v) => { if (date && v != null && isFinite(v)) (days[date] ||= {})[k] = v; };
+  // Simple format (Shortcut)
+  const simple = Array.isArray(obj) ? obj : Array.isArray(obj?.entries) ? obj.entries : (obj && !obj.data && (obj.date || obj.day)) ? [obj] : null;
+  if (simple) {
+    for (const e of simple) {
+      const date = normDate(String(e.date || e.day || ''));
+      if (!date) continue;
+      for (const [k, v] of Object.entries(e)) {
+        const key = SIMPLE_KEYS[k.toLowerCase().replace(/[^a-z]/g, '')];
+        const n = toNum(v);
+        if (!key || n == null) continue;
+        if (key === 'weightKg') put(date, 'weightLb', Math.round(n * KG_TO_LB * 10) / 10);
+        else if (key === 'weightLb') put(date, 'weightLb', Math.round((/kg/i.test(e.weightUnit || '') ? n * KG_TO_LB : n) * 10) / 10);
+        else put(date, key, key === 'sleepH' ? Math.round(n * 10) / 10 : Math.round(n));
+      }
+    }
+    return { days, summary: `${Object.keys(days).length} day${Object.keys(days).length === 1 ? '' : 's'}`, source: 'Apple Health' };
+  }
+  const metrics = obj?.data?.metrics || obj?.metrics;
+  if (!Array.isArray(metrics)) throw new Error('This file is not Health Auto Export or Shortcut data.');
+  const sums = {}, last = {}, avg = {};
+  let points = 0;
+  for (const m of metrics) {
+    const name = String(m.name || '').toLowerCase();
+    const key = HAE_NAMES.find(([re]) => re.test(name))?.[1];
+    if (!key) continue;
+    const unit = String(m.units || '').toLowerCase();
+    for (const p of m.data || []) {
+      const date = normDate(String(p.date || p.startDate || p.start || ''));
+      if (!date) continue;
+      points++;
+      if (key === 'sleepH') {
+        const h = toNum(p.totalSleep ?? p.asleep ?? p.qty);
+        if (h != null) ((sums[date] ||= {}).sleepH = Math.max(sums[date].sleepH || 0, unit === 'min' ? h / 60 : h));
+        continue;
+      }
+      let v = toNum(p.qty ?? p.Avg ?? p.avg);
+      if (v == null) continue;
+      if (key === 'weightLb') { v = unit === 'kg' ? v * KG_TO_LB : unit === 'g' ? v / 1000 * KG_TO_LB : v; const t = String(p.date || ''); if (!last[date] || t >= last[date].t) last[date] = { t, v }; continue; }
+      if (key === 'restingHR') { const a = (avg[date] ||= { s: 0, n: 0 }); a.s += v; a.n++; continue; }
+      if ((key === 'active' || key === 'basal') && unit === 'kj') v *= KJ_TO_KCAL;
+      if (key === 'exercise' && unit === 'hr') v *= 60;
+      const d = (sums[date] ||= {});
+      d[key] = (d[key] || 0) + v;
+    }
+  }
+  for (const [date, d] of Object.entries(sums)) for (const [k, v] of Object.entries(d)) put(date, k, k === 'sleepH' ? Math.round(v * 10) / 10 : Math.round(v));
+  for (const [date, w] of Object.entries(last)) put(date, 'weightLb', Math.round(w.v * 10) / 10);
+  for (const [date, a] of Object.entries(avg)) put(date, 'restingHR', Math.round(a.s / a.n));
+  return { days, summary: `${points.toLocaleString()} reading${points === 1 ? '' : 's'} across ${Object.keys(days).length} day${Object.keys(days).length === 1 ? '' : 's'}`, source: 'Apple Health' };
+}
+
+async function importJSON(file) {
+  return parseHealthJSON(JSON.parse(fs.readFileSync(file, 'utf8')));
+}
+
 async function importFile(kind, file) {
+  if (/\.json$/i.test(file)) return importJSON(file);
   if (kind === 'apple') return importApple(file);
   if (kind === 'google') return importGoogle(file);
   return importCSV(file);
 }
 
-module.exports = { importFile, importApple, importGoogle, importCSV, parseCSV, rowsToDays };
+module.exports = { importFile, importApple, importGoogle, importCSV, importJSON, parseHealthJSON, parseCSV, rowsToDays };

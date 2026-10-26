@@ -142,6 +142,10 @@ function defaultData() {
       minPerSetSide: 1.25,
       activityFactor: 1.2,
       healthSources: [],
+      sync: { enabled: false, port: 47821, key: null },
+      watchDir: null,
+      background: false,
+      goals: { move: 500, exercise: 30, stand: 12 },
       lastNotified: null,
     },
     program: structuredClone(DEFAULT_PROGRAM),
@@ -499,6 +503,7 @@ function viewToday() {
         ${workoutSection(date, sc, rec, p, isFuture, isPast)}
       </section>
       <aside class="fuel-col" aria-label="Food and calories">
+        ${activityCard(date)}
         ${caloriesCard(date, cal)}
         ${nutritionCard(date)}
         ${weightCard(date)}
@@ -697,6 +702,44 @@ function caloriesCard(date, cal) {
   </section>`;
 }
 
+// ---------- Activity (Apple Fitness rings) ----------
+function activityRings(rings) {
+  const size = 120, stroke = 13, gap = 3;
+  return `<svg class="rings" viewBox="0 0 ${size} ${size}" aria-hidden="true">${rings.map((r, i) => {
+    const rad = size / 2 - stroke / 2 - i * (stroke + gap), c = 2 * Math.PI * rad, pct = Math.min(r.pct, 1);
+    return `<circle cx="${size / 2}" cy="${size / 2}" r="${rad}" class="ring-bg" style="stroke:${r.bg}"/><circle cx="${size / 2}" cy="${size / 2}" r="${rad}" class="ring-val" style="stroke:${r.color}" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct)}"/>`;
+  }).join('')}</svg>`;
+}
+function activityCard(date) {
+  const h = data.health[date];
+  const connected = data.settings.sync?.enabled || data.settings.watchDir;
+  const has = h && ['active', 'exercise', 'stand', 'steps'].some(k => h[k] != null);
+  if (!has) {
+    if (connected || date !== todayStr()) return '';
+    return `<section class="card act-card act-empty"><header class="card-head"><h2>Activity</h2></header><p class="hint">Connect Apple Health to see your Move, Exercise and Stand rings, steps and synced weight here.</p><button class="btn btn-small" data-action="go-health">Connect Apple Health</button></section>`;
+  }
+  const g = data.settings.goals || { move: 500, exercise: 30, stand: 12 };
+  const rings = [
+    { label: 'Move', v: h.active, goal: g.move, unit: 'kcal', color: 'var(--red)', bg: 'var(--red-c)' },
+    { label: 'Exercise', v: h.exercise, goal: g.exercise, unit: 'min', color: 'var(--green)', bg: 'var(--green-c)' },
+    { label: 'Stand', v: h.stand, goal: g.stand, unit: 'hr', color: 'var(--blue)', bg: 'var(--blue-c)' },
+  ].map(r => ({ ...r, pct: r.v != null && r.goal ? r.v / r.goal : 0 }));
+  const extras = [
+    h.steps != null && `<span><b>${num(h.steps)}</b> steps</span>`,
+    h.restingHR && `<span><b>${h.restingHR}</b> resting bpm</span>`,
+    h.sleepH && `<span><b>${h.sleepH}</b> h sleep</span>`,
+  ].filter(Boolean).join('');
+  const when = h.syncedAt ? `Synced ${new Date(h.syncedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : `From ${esc(h.source || 'imported data')}`;
+  return `<section class="card act-card">
+    <header class="card-head"><h2>Activity</h2><span class="hint">${when}</span></header>
+    <div class="act-body">
+      ${activityRings(rings)}
+      <ul class="act-list">${rings.map(r => `<li><i style="background:${r.color}"></i><span>${r.label}</span><b>${r.v != null ? num(r.v) : '–'}</b><small>/ ${num(r.goal)} ${r.unit}</small></li>`).join('')}</ul>
+    </div>
+    ${extras ? `<div class="act-extras">${extras}</div>` : ''}
+  </section>`;
+}
+
 function weightCard(date) {
   const w = data.days[date]?.weight;
   const prevDates = Object.keys(data.days).filter(d => d < date && data.days[d].weight).sort();
@@ -707,7 +750,7 @@ function weightCard(date) {
     <header class="card-head"><h2>Body weight</h2>${delta != null ? `<span class="delta ${delta > 0 ? 'up' : delta < 0 ? 'down' : ''}">${delta > 0 ? '+' : ''}${delta} lb</span>` : ''}</header>
     <div class="inline-form">
       <label class="wt big"><input type="number" step="0.1" min="0" data-input="body-weight" value="${w ?? ''}" placeholder="${latestWeight(date) ?? '0.0'}"><span>lb</span></label>
-      ${prev ? `<span class="hint">Last: ${prev} lb</span>` : `<span class="hint">Weigh in after waking up for the cleanest trend.</span>`}
+      ${!w && data.health[date]?.weightLb ? `<span class="hint">From Apple Health: ${data.health[date].weightLb} lb</span>` : prev ? `<span class="hint">Last: ${prev} lb</span>` : `<span class="hint">Weigh in after waking up for the cleanest trend.</span>`}
     </div>
   </section>`;
 }
@@ -881,6 +924,10 @@ function viewProgress() {
         <p class="hint">${best ? `Best: ${best.top} lb on ${shortDate(best.date)}. ${sessions.length} session${sessions.length === 1 ? '' : 's'} logged.` : 'Log weights on your sets to see your top weight per session.'}</p>
       </section>
       <section class="card span-2">
+        <header class="card-head"><h2>Activity</h2><span class="hint">From Apple Health</span></header>
+        <div class="chart" data-chart="activity"></div>
+      </section>
+      <section class="card span-2">
         <header class="card-head"><h2>Calories in and out</h2></header>
         <div class="chart" data-chart="calories"></div>
       </section>
@@ -914,6 +961,16 @@ function hydrateCharts() {
     if (c.inK) inPts.push({ x: d, y: Math.round(c.inK) });
     if (c.out && (c.inK || data.days[d])) outPts.push({ x: d, y: Math.round(c.out) });
   }
+  const actPts = [], exPts = [];
+  for (const d of Object.keys(data.health).sort()) {
+    if (d < start || d > today) continue;
+    if (data.health[d].active != null) actPts.push({ x: d, y: data.health[d].active });
+    if (data.health[d].exercise != null) exPts.push({ x: d, y: data.health[d].exercise });
+  }
+  drawChart($('[data-chart="activity"]'), [
+    { name: 'Move (active kcal)', color: 'var(--red)', points: actPts },
+    { name: 'Exercise (min)', color: 'var(--green)', points: exPts },
+  ], { unit: '', empty: 'Connect Apple Health in Settings to chart your Move and Exercise rings.' });
   drawChart($('[data-chart="calories"]'), [
     { name: 'In', color: 'var(--cyan)', points: inPts },
     { name: 'Out', color: 'var(--yellow)', points: outPts },
@@ -935,7 +992,7 @@ function drawChart(el, series, { unit = '', empty = 'No data yet.' } = {}) {
   const sy = (v) => P.t + (1 - (v - y0) / (y1 - y0)) * (H - P.t - P.b);
   const ticks = niceTicks(y0, y1, 4);
   let g = ticks.map(v => `<line x1="${P.l}" x2="${W - P.r}" y1="${sy(v)}" y2="${sy(v)}" class="grid"/><text x="${P.l - 8}" y="${sy(v) + 4}" text-anchor="end" class="axis">${num(v)}</text>`).join('');
-  const xt = 4;
+  const xt = Math.max(1, Math.min(4, Math.round((x1 - x0) / 864e5)));
   for (let i = 0; i <= xt; i++) { const t = x0 + (x1 - x0) * i / xt; const d = fmtDate(new Date(t)); g += `<text x="${sx(t)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === xt ? 'end' : 'middle'}" class="axis">${shortDate(d)}</text>`; }
   const paths = series.map(s => {
     if (!s.points.length) return '';
@@ -966,7 +1023,7 @@ function niceTicks(a, b, n) {
   const span = b - a, step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0));
   const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => span / s <= n + 1) || mag * 10;
   const out = [];
-  for (let v = Math.ceil(a / step) * step; v <= b; v += step) out.push(round(v, 4));
+  for (let v = Math.ceil(a / step) * step; v <= b; v += step) out.push(round(v, 4) || 0);
   return out;
 }
 
@@ -1106,7 +1163,6 @@ function viewSettings() {
       <div class="edit-table meal-t"><span>Food</span><span>Default qty</span><span>Unit</span><span>kcal</span><span>Protein g</span><span>Carbs g</span><span>Fat g</span><span></span><span></span>
       ${m.items.map(it => `<input data-edit="food" data-m="${m.id}" data-id="${it.id}" data-k="name" value="${esc(it.name)}"><input type="number" step="0.5" data-edit="food" data-m="${m.id}" data-id="${it.id}" data-k="qty" value="${it.qty}"><input data-edit="food" data-m="${m.id}" data-id="${it.id}" data-k="unit" value="${esc(it.unit)}"><input type="number" step="any" data-edit="food" data-m="${m.id}" data-id="${it.id}" data-k="kcal" value="${it.kcal}"><input type="number" step="any" data-edit="food" data-m="${m.id}" data-id="${it.id}" data-k="protein" value="${it.protein}">${['carbs', 'fat'].map(k => `<input type="number" step="any" data-edit="food-n" data-m="${m.id}" data-id="${it.id}" data-k="${k}" value="${it.n?.[k] ?? ''}" placeholder="0">`).join('')}<button class="link-btn more-btn" data-action="food-more" data-id="${it.id}" aria-expanded="${ui.nutEdit === it.id}">${ui.nutEdit === it.id ? 'Less' : 'More'}</button><button class="icon-btn sm" data-action="del-food" data-m="${m.id}" data-id="${it.id}" aria-label="Remove">${ICON.x}</button>${ui.nutEdit === it.id ? `<div class="nut-edit"><p class="hint">Per ${esc(it.unit)}</p>${NUTRIENTS.filter(n => !['protein', 'carbs', 'fat'].includes(n.k)).map(n => `<label class="field"><span>${esc(n.label)} (${n.unit})</span><input type="number" step="any" data-edit="food-n" data-m="${m.id}" data-id="${it.id}" data-k="${n.k}" value="${it.n?.[n.k] ?? ''}" placeholder="0"></label>`).join('')}</div>` : ''}`).join('')}
       </div><button class="link-btn" data-action="add-food" data-m="${m.id}">+ Add food</button></div>`).join('');
-  const sources = s.healthSources.map((src, i) => `<li><b>${({ apple: 'Apple Health', google: 'Google Fit', csv: 'CSV' })[src.kind]}</b><span class="path">${esc(src.path)}</span><small>${esc(src.summary || '')}${src.at ? ', imported ' + new Date(src.at).toLocaleString() : ''}</small><button class="icon-btn sm" data-action="del-source" data-i="${i}" aria-label="Stop syncing">${ICON.x}</button></li>`).join('');
   return `
   <div class="page settings">
     <header class="page-head"><h1>Settings</h1></header>
@@ -1138,20 +1194,7 @@ function viewSettings() {
       </div>
     </section>
 
-    <section class="card"><header class="card-head"><h2>Fitness data</h2></header>
-      <p>Bring in active calories, steps and weight from your phone. Re-export to the same file path and the app picks up changes every time it opens.</p>
-      <div class="row-gap wrap">
-        <button class="btn" data-action="import" data-kind="apple">Import Apple Health export</button>
-        <button class="btn" data-action="import" data-kind="google">Import Google Fit (Takeout)</button>
-        <button class="btn" data-action="import" data-kind="csv">Import CSV</button>
-      </div>
-      ${sources ? `<ul class="sources">${sources}</ul>` : ''}
-      <details class="howto"><summary>How to export your data</summary>
-        <p><b>iPhone (Apple Health):</b> Health app, tap your profile picture, Export All Health Data. Save the zip to iCloud Drive or OneDrive so it syncs to this PC, then import it here. For daily automatic syncing, an app like Health Auto Export can write a CSV to iCloud Drive on a schedule. Import that CSV once and it refreshes each time you open Workout Tracker.</p>
-        <p><b>Android (Google Fit):</b> go to takeout.google.com, select only Fit, and download the zip. Import the zip or the "Daily activity metrics.csv" inside it.</p>
-        <p><b>Any CSV:</b> needs a Date column plus any of: Active energy (kcal), Resting energy, Total calories, Steps, Weight (lb or kg).</p>
-      </details>
-    </section>
+    <section class="card" id="health-card">${healthCard()}</section>
 
     <section class="card"><header class="card-head"><h2>Workout plan</h2></header>${progEditor}</section>
     <section class="card"><header class="card-head"><h2>Meal plan</h2></header><p class="hint">Numbers are per unit. Defaults come from your product labels and USDA data. Click More on any food for vitamins and minerals, and adjust them to match what you buy.</p>${mealEditor}</section>
@@ -1411,6 +1454,19 @@ document.addEventListener('click', async (e) => {
     case 'add-food': { const m = data.meals.find(x => x.id === a.dataset.m); const it = food('New food', 1, 'serving', 100, 0, {}); m.items.push(it); ui.nutEdit = it.id; break; }
     case 'del-food': { const m = data.meals.find(x => x.id === a.dataset.m); if (!confirmInline(a)) return; m.items = m.items.filter(e => e.id !== a.dataset.id); break; }
     case 'import': return doImport(a.dataset.kind, a);
+    case 'go-health': go('settings'); setTimeout(() => $('#health-card')?.scrollIntoView({ behavior: 'smooth' }), 50); return;
+    case 'copy': {
+      const t = a.dataset.text;
+      (navigator.clipboard?.writeText(t) || Promise.reject()).then(() => toast('Copied')).catch(() => toast(t));
+      return;
+    }
+    case 'new-key': data.settings.sync.key = newKey(); save(); applySync(); toast('New key made. Update it on your iPhone.'); return;
+    case 'pick-watch': {
+      const dir = await window.api?.sync?.pickFolder();
+      if (dir) { data.settings.watchDir = dir; save(); window.api.sync.watch(dir).then(st => { ui.sync = st; refreshHealthCard(); }); }
+      return;
+    }
+    case 'unwatch': data.settings.watchDir = null; save(); window.api?.sync?.watch(null).then(st => { ui.sync = st; refreshHealthCard(); }); return;
     case 'del-source': data.settings.healthSources.splice(+a.dataset.i, 1); break;
     case 'export': {
       if (window.api) { const p = await window.api.exportBackup(data); if (p) toast('Backup saved'); }
@@ -1513,6 +1569,17 @@ document.addEventListener('change', (e) => {
   if (k === 'day-jump') { if (el.value) { ui.date = el.value; ui.open = {}; render(); } return; }
   if (k === 'prog-ex') { ui.progEx = el.value; return render(); }
 
+  // Apple Health settings
+  const hk = el.dataset.health;
+  if (hk) {
+    const s = data.settings; s.sync ||= { enabled: false, port: 47821, key: null };
+    if (hk === 'wifi') { s.sync.enabled = el.checked; if (el.checked && !s.sync.key) s.sync.key = newKey(); save(); applySync(); el.blur(); setTimeout(refreshHealthCard, 50); }
+    if (hk === 'port') { const v = +el.value; if (v >= 1024 && v <= 65535) { s.sync.port = v; save(); applySync(); } else toast('Use a port between 1024 and 65535'); }
+    if (hk === 'background') { s.background = el.checked; save(); window.api?.background(el.checked); toast(el.checked ? 'Closing the window now keeps the app in the tray' : 'Closing the window quits the app'); }
+    return;
+  }
+  if (el.dataset.goal) { const g = (data.settings.goals ||= { move: 500, exercise: 30, stand: 12 }); g[el.dataset.goal] = Math.max(1, +el.value || 1); save(); toast('Saved'); return; }
+
   // Settings
   const sk = el.dataset.set, s = data.settings;
   if (sk) {
@@ -1557,6 +1624,94 @@ document.addEventListener('keydown', (e) => {
   const sib = e.key === 'ArrowRight' ? r.nextElementSibling : r.previousElementSibling;
   if (sib?.classList.contains('rep')) { e.preventDefault(); sib.focus(); }
 });
+
+// ======================================================================
+// Apple Health settings card
+// ======================================================================
+const newKey = () => Array.from(crypto.getRandomValues(new Uint8Array(15)), b => 'abcdefghjkmnpqrstuvwxyz23456789'[b % 31]).join('');
+function healthCard() {
+  const s = data.settings, sy = s.sync || {}, st = ui.sync || {};
+  const desktop = !!window.api?.sync;
+  const ip = st.addresses?.[0] || 'YOUR-PC-IP';
+  const port = st.port || sy.port || 47821;
+  const url = `http://${ip}:${port}/health`;
+  const g = s.goals || { move: 500, exercise: 30, stand: 12 };
+  const last = s.lastHealthSync ? new Date(s.lastHealthSync).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
+  const sources = s.healthSources.map((src, i) => `<li><b>${({ apple: 'Apple Health', google: 'Google Fit', csv: 'CSV' })[src.kind] || 'File'}</b><span class="path">${esc(src.path)}</span><small>${esc(src.summary || '')}${src.at ? ', imported ' + new Date(src.at).toLocaleString() : ''}</small><button class="icon-btn sm" data-action="del-source" data-i="${i}" aria-label="Stop syncing">${ICON.x}</button></li>`).join('');
+  let wifiStatus = '';
+  if (sy.enabled) wifiStatus = st.error ? `<p class="sync-status bad">${esc(st.error)}</p>` : st.listening ? `<p class="sync-status ok">Ready for your iPhone on port ${port}.${st.lastAt ? ` Last received ${new Date(st.lastAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}: ${esc(st.lastSummary || '')}.` : ''}</p>` : '<p class="sync-status">Starting…</p>';
+  return `<header class="card-head"><h2>Apple Health and Fitness</h2>${last ? `<span class="pill ok">Last sync ${esc(last)}</span>` : ''}</header>
+    <p>Your iPhone sends Apple Health data here automatically: Move, Exercise and Stand, steps, active and resting calories, weight, resting heart rate and sleep. Synced days replace the calorie estimate, and synced weight fills in your weigh-ins.</p>
+    ${!desktop ? '<p class="hint">Syncing works in the desktop app.</p>' : `
+    <div class="sync-grid">
+      <div class="sync-opt">
+        <label class="toggle"><input type="checkbox" data-health="wifi" ${sy.enabled ? 'checked' : ''}><span><b>Sync over Wi-Fi</b><small>Instant. Your iPhone and this PC need to be on the same Wi-Fi, with this app open.</small></span></label>
+        ${sy.enabled ? `
+        <div class="copy-row"><span>Address</span><code>${esc(url)}</code><button class="btn btn-small" data-action="copy" data-text="${esc(url)}">Copy</button></div>
+        <div class="copy-row"><span>Key</span><code>${esc(sy.key || '')}</code><button class="btn btn-small" data-action="copy" data-text="${esc(sy.key || '')}">Copy</button></div>
+        ${wifiStatus}
+        <p class="hint">Test it: open <code>${esc(`http://${ip}:${port}/ping?key=${sy.key}`)}</code> in Safari on your iPhone. If Windows asks about network access, allow it on private networks.${st.addresses?.length > 1 ? ` Other addresses for this PC: ${st.addresses.slice(1).map(esc).join(', ')}.` : ''}</p>
+        <div class="row-gap wrap"><label class="field port-field"><span>Port</span><input type="number" data-health="port" value="${port}"></label><button class="link-btn" data-action="new-key">Make a new key</button></div>` : ''}
+      </div>
+      <div class="sync-opt">
+        <div class="toggle"><span><b>Watch an iCloud Drive folder</b><small>Works even if this PC was off when your iPhone synced. Needs iCloud for Windows.</small></span></div>
+        ${s.watchDir ? `<div class="copy-row"><span>Folder</span><code>${esc(s.watchDir)}</code><button class="btn btn-small btn-ghost" data-action="unwatch">Stop</button></div>
+          ${st.watch?.error ? `<p class="sync-status bad">${esc(st.watch.error)}</p>` : st.watch?.lastAt ? `<p class="sync-status ok">Last file: ${esc(st.watch.lastFile)} at ${new Date(st.watch.lastAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.</p>` : '<p class="sync-status">Watching for new files.</p>'}`
+        : `<button class="btn" data-action="pick-watch">Choose folder</button>`}
+      </div>
+    </div>
+    <label class="toggle bg-toggle"><input type="checkbox" data-health="background" ${s.background ? 'checked' : ''}><span><b>Keep syncing when the window is closed</b><small>Closing the window hides the app in the system tray instead of quitting. Pair it with "Open when I sign in to Windows" under Reminders.</small></span></label>
+    <div class="form-grid goals"><label class="field"><span>Move goal (kcal)</span><input type="number" data-goal="move" value="${g.move}"></label><label class="field"><span>Exercise goal (min)</span><input type="number" data-goal="exercise" value="${g.exercise}"></label><label class="field"><span>Stand goal (hours)</span><input type="number" data-goal="stand" value="${g.stand}"></label></div>
+    <details class="howto"><summary>Set up with Health Auto Export (easiest)</summary>
+      <ol>
+        <li>On your iPhone, install <b>Health Auto Export - JSON+CSV</b> from the App Store and allow Health access. Background syncing needs its Premium plan.</li>
+        <li>Open <b>Automations</b>, add a new automation, and choose <b>REST API</b>.</li>
+        <li>URL: <code>${esc(url)}</code>. Add a header named <code>Authorization</code> with the value <code>Bearer ${esc(sy.key || 'YOUR-KEY')}</code>. Turn on Wi-Fi sync above first to get these.</li>
+        <li>Export format <b>JSON</b>. Pick Active Energy, Resting Energy, Step Count, Apple Exercise Time, Apple Stand Hour, Weight & Body Mass, Resting Heart Rate and Sleep Analysis.</li>
+        <li>Group data by <b>day</b> and include at least today and yesterday in each sync, so totals are always complete. Set it to sync every hour or so.</li>
+        <li>Tap <b>Manual export</b> once to test. The Activity card on Today fills in within a second.</li>
+      </ol>
+      <p>Prefer the folder route? Choose <b>iCloud Drive</b> as the automation type with JSON format, then click Choose folder above and pick that folder inside your iCloud Drive on this PC.</p>
+    </details>
+    <details class="howto"><summary>Set up with a free Apple Shortcut</summary>
+      <ol>
+        <li>In the <b>Shortcuts</b> app, create a shortcut. For each of Active Energy, Resting Energy, Steps, Exercise Minutes and Stand Hours, add <b>Find Health Samples</b> (type, start date is today), then <b>Calculate Statistics</b> → Sum.</li>
+        <li>For weight, add <b>Find Health Samples</b> for Weight, sorted by start date, latest first, limit 1.</li>
+        <li>Add a <b>Dictionary</b> with keys <code>date</code> (Current Date, formatted yyyy-MM-dd), <code>active</code>, <code>basal</code>, <code>steps</code>, <code>exercise</code>, <code>stand</code>, <code>weight</code>.</li>
+        <li>Add <b>Get Contents of URL</b>: <code>${esc(url)}</code>, method POST, header <code>Authorization: Bearer ${esc(sy.key || 'YOUR-KEY')}</code>, request body JSON set to the Dictionary.</li>
+        <li>In <b>Automation</b>, run it at a few times each day (for example 9 AM, 1 PM, 6 PM and 10 PM) with <b>Run Immediately</b> on.</li>
+      </ol>
+    </details>`}
+    <details class="howto"><summary>Import a file instead</summary>
+      <div class="row-gap wrap" style="margin-top:10px">
+        <button class="btn" data-action="import" data-kind="apple">Apple Health export (.zip)</button>
+        <button class="btn" data-action="import" data-kind="google">Google Fit (Takeout)</button>
+        <button class="btn" data-action="import" data-kind="csv">CSV or JSON</button>
+      </div>
+      ${sources ? `<ul class="sources">${sources}</ul>` : ''}
+      <p><b>Full Apple Health export:</b> Health app → your profile picture → Export All Health Data. Imported files re-sync automatically when they change.</p>
+    </details>`;
+}
+function refreshHealthCard() {
+  const card = $('#health-card');
+  if (card && !card.contains(document.activeElement)) card.innerHTML = healthCard();
+}
+function applySync() {
+  if (!window.api?.sync) return;
+  const s = data.settings;
+  window.api.sync.configure({ enabled: !!s.sync?.enabled, port: +s.sync?.port || 47821, key: s.sync?.key }).then(st => { ui.sync = st; refreshHealthCard(); });
+}
+// Data pushed from the iPhone (Wi-Fi or folder).
+function onHealthPush(p) {
+  let n = 0;
+  for (const [d, v] of Object.entries(p.days || {})) { data.health[d] = { ...(data.health[d] || {}), ...v, source: p.source || 'Apple Health', syncedAt: p.at || Date.now() }; n++; }
+  if (!n) return;
+  data.settings.lastHealthSync = p.at || Date.now();
+  save();
+  const typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  if (!typing && ui.view !== 'settings') render(); else refreshHealthCard();
+  toast(`Apple Health synced (${n} day${n === 1 ? '' : 's'})`);
+}
 
 // ======================================================================
 // Fitness data import
@@ -1623,6 +1778,8 @@ function migrate(d) {
   const base = defaultData();
   d.settings = { ...base.settings, ...d.settings, profile: { ...base.settings.profile, ...(d.settings?.profile || {}) }, reminder: { ...base.settings.reminder, ...(d.settings?.reminder || {}) } };
   d.program ||= base.program; d.meals ||= base.meals; d.days ||= {}; d.health ||= {};
+  d.settings.sync = { ...base.settings.sync, ...(d.settings.sync || {}) };
+  d.settings.goals = { ...base.settings.goals, ...(d.settings.goals || {}) };
   // Fill nutrients into meal plans saved before nutrition tracking existed.
   for (const m of d.meals) for (const it of m.items) if (!it.n) it.n = { ...(NUT_BY_NAME[it.name.toLowerCase()]?.n || {}) };
   return d;
@@ -1657,6 +1814,14 @@ const ICON = {
   refreshHealth();
   setInterval(tick, 30000);
   tick();
+  if (window.api?.sync) {
+    window.api.sync.onPush(onHealthPush);
+    window.api.sync.onState(st => { ui.sync = st; refreshHealthCard(); });
+    applySync();
+    if (data.settings.watchDir) window.api.sync.watch(data.settings.watchDir);
+    if (data.settings.background) window.api.background(true);
+    window.api.sync.ready().then(queued => queued.forEach(onHealthPush)).catch(() => {});
+  }
   if (window.api?.update) {
     window.api.update.onStatus(onUpdateStatus);
     window.api.update.healthy().catch(() => {});
