@@ -117,10 +117,13 @@ exports.start = function start(ctx) {
     const home = app.getPath('home');
     const c = [
       ['OneDrive', process.env.OneDrive], ['OneDrive', process.env.OneDriveConsumer], ['OneDrive', path.join(home, 'OneDrive')],
-      ['iCloud Drive', path.join(home, 'iCloudDrive')], ['Google Drive', path.join(home, 'Google Drive')], ['Dropbox', path.join(home, 'Dropbox')],
+      ['iCloud Drive', path.join(home, 'iCloudDrive')], ['Dropbox', path.join(home, 'Dropbox')],
     ];
+    // Google Drive for desktop shows up as its own drive letter ("G:\My Drive") or, in mirror mode, a folder.
+    if (process.platform === 'win32') for (const L of 'GHIJKLMNOPQRSTUVWXYZDEF') c.push(['Google Drive', `${L}:\\My Drive`]);
+    for (const dir of [path.join(home, 'My Drive'), path.join(home, 'Google Drive', 'My Drive'), path.join(home, 'Google Drive')]) c.push(['Google Drive', dir]);
     const seen = new Set(), out = [];
-    for (const [name, dir] of c) { if (dir && !seen.has(dir) && fs.existsSync(dir)) { seen.add(dir); out.push({ name, dir }); } }
+    for (const [name, dir] of c) { if (dir && !seen.has(name) && fs.existsSync(dir)) { seen.add(name); out.push({ name, dir }); } }
     return out;
   });
   handle('backup:pick', async () => {
