@@ -117,6 +117,7 @@ const NUTRIENTS = [
 ];
 const NDEF = Object.fromEntries(NUTRIENTS.map(n => [n.k, n]));
 const N_EXTRA = NUTRIENTS.filter(n => n.k !== 'protein').map(n => n.k);
+const mealById = (id) => id === '__swaps' ? { id: '__swaps', name: 'Swap foods', items: (data.swapFoods ||= []) } : data.meals.find(m => m.id === id);
 const MISS_REASONS = [
   { id: 'vacation', label: 'Vacation', color: '#4285F4' },
   { id: 'laziness', label: 'Laziness', color: '#EA4335' },
@@ -126,6 +127,16 @@ const MISS_REASONS = [
   { id: 'other', label: 'Other', color: '#80868B' },
 ];
 const reasonOf = (id) => MISS_REASONS.find(r => r.id === id);
+// Foods you can swap in for a planned item on any day (approximate USDA values; edit in Settings).
+const DEFAULT_SWAPS = [
+  food('White rice', 1, 'cup cooked', 205, 4.3, { carbs: 44.5, fat: .4, fiber: .6, sugar: .1, sodium: 2, potassium: 55, calcium: 16, iron: 1.9, magnesium: 19, folate: 92 }),
+  food('Low-sodium dill pickles', 1, 'spear', 4, .2, { carbs: .8, fiber: .3, sodium: 100, potassium: 40 }),
+  food('Whole-wheat tortilla', 1, 'medium (8")', 140, 4.4, { carbs: 22, fat: 3.5, satFat: .8, fiber: 3.2, sugar: 1, sodium: 280, potassium: 120, calcium: 50, iron: 1.4, magnesium: 30 }),
+  food('Nonfat Greek yogurt', 1, 'cup', 133, 23, { carbs: 8, fat: .9, satFat: .2, sugar: 7, sodium: 82, chol: 11, potassium: 320, calcium: 250, b12: 1.7, magnesium: 25 }),
+  food('Orange', 1, 'medium', 62, 1.2, { carbs: 15.4, fat: .2, fiber: 3.1, sugar: 12.2, potassium: 237, calcium: 52, vitC: 70, folate: 39, magnesium: 13 }),
+  food('Ground turkey (93% lean)', 1, 'fist (~150 g cooked)', 320, 40.6, { fat: 17.4, satFat: 4.8, sodium: 113, chol: 132, potassium: 400, iron: 1.8, b12: 1.9, magnesium: 38, choline: 120 }),
+  food('Egg whites', 1, 'large egg white', 17, 3.6, { carbs: .2, sodium: 55, potassium: 54 }),
+];
 
 function defaultData() {
   return {
@@ -150,6 +161,8 @@ function defaultData() {
       background: false,
       goals: { move: 500, exercise: 30, stand: 12 },
       breaks: [],
+      goal: { mode: 'maintain', rate: 0.5, proteinPerLb: 0.8, kcalOverride: null, adjustTimeOff: true },
+      waterGoal: 8,
       share: { enabled: false, workouts: true, cardio: true, food: true, weight: true, calories: true, foodAfter: '21:00' },
       lastNotified: null,
     },
@@ -157,6 +170,7 @@ function defaultData() {
     meals: structuredClone(DEFAULT_MEALS),
     days: {},
     health: {},
+    swapFoods: structuredClone(DEFAULT_SWAPS),
   };
 }
 
@@ -468,6 +482,109 @@ function sessionTop(arr) {
 }
 
 // ======================================================================
+// Analysis: weight trend, real maintenance calories, estimated max, balance, volume
+// ======================================================================
+// Smoothed body-weight trend (exponential moving average, 10% per weigh-in), so water swings don't drown the signal.
+function weightTrend() {
+  return memoize('trend', () => {
+    const dates = [...new Set([...Object.keys(data.days), ...Object.keys(data.health)])].filter(d => weightOn(d) != null && d <= todayStr()).sort();
+    const map = {};
+    if (!dates.length) return { map, list: [], first: null };
+    let t = weightOn(dates[0]);
+    for (let d = dates[0]; d <= todayStr(); d = addDays(d, 1)) {
+      const w = weightOn(d);
+      if (w != null) t += 0.1 * (w - t);
+      map[d] = round(t, 2);
+    }
+    return { map, list: Object.entries(map).map(([x, y]) => ({ x, y })), first: dates[0] };
+  });
+}
+// Pounds per week from the trend over the last 14 days (needs 10+ days of history).
+function weeklyRate() {
+  const { map, first } = weightTrend(), t = todayStr();
+  if (!first || diffDays(first, t) < 10) return null;
+  const back = addDays(t, -14) < first ? first : addDays(t, -14);
+  const days = diffDays(back, t);
+  return days ? round((map[t] - map[back]) / days * 7, 2) : null;
+}
+const avgTrainingKcal = (from, to) => {
+  let sum = 0, n = 0;
+  for (let d = from; d <= to; d = addDays(d, 1)) { const c = calories(d); sum += (c.liftK || 0) + (c.cardioK || 0); n++; }
+  return n ? sum / n : 0;
+};
+// Real maintenance: average intake minus the energy implied by the weight trend (3,500 kcal per lb).
+function maintenance() {
+  return memoize('maint', () => {
+    const t = todayStr(), end = addDays(t, -1), start = addDays(end, -27);
+    const { map } = weightTrend();
+    let foodDays = 0, kcal = 0, weighIns = 0, first = null;
+    for (let d = start; d <= end; d = addDays(d, 1)) {
+      const e = dayEntries(data.days[d]);
+      if (e.length) { foodDays++; kcal += nutrition(e).t.kcal; }
+      if (weightOn(d) != null) weighIns++;
+      if (map[d] != null && !first) first = d;
+    }
+    const training = avgTrainingKcal(start < data.settings.startDate ? data.settings.startDate : start, end);
+    if (first && foodDays >= 10 && weighIns >= 4 && diffDays(first, end) >= 14) {
+      const days = diffDays(first, end), delta = map[end] - map[first];
+      const est = kcal / foodDays - delta * 3500 / days;
+      if (est > 1200 && est < 6000) return { kcal: Math.round(est / 10) * 10, source: 'adaptive', foodDays, weighIns, days, deltaLb: round(delta, 1), training };
+    }
+    // Not enough history yet: average of the daily calories-out estimate (or Apple Health) over the last 14 days.
+    let sum = 0, n = 0;
+    for (let d = addDays(t, -13); d <= t; d = addDays(d, 1)) { const c = calories(d); if (c.out) { sum += c.out; n++; } }
+    if (!n) { const b = bmr(t); if (!b) return null; return { kcal: Math.round((b * data.settings.activityFactor + training) / 10) * 10, source: 'estimate', foodDays, weighIns, training }; }
+    return { kcal: Math.round(sum / n / 10) * 10, source: 'estimate', foodDays, weighIns, training };
+  });
+}
+// Estimated one-rep max (Epley), best across the working sets of a session.
+const epley = (w, r) => w > 0 && r > 0 ? w * (1 + Math.min(r, 15) / 30) : 0;
+function sessionE1RM(arr) {
+  let best = 0;
+  for (const row of arr || []) if (row) for (const c of Object.values(row)) if (c?.c) best = Math.max(best, epley(+c.w || 0, +c.r || 0));
+  return round(best, 1);
+}
+// Left vs right: compare reps on sets where both sides were done at the same weight (last 4 sessions).
+function sideBalance(e) {
+  if (!e.perSide) return null;
+  const ss = sessionsOf(e.id, addDays(todayStr(), 1), 4);
+  let L = 0, R = 0, pairs = 0;
+  for (const x of ss) for (const row of x.sets || []) {
+    if (!row?.L?.c || !row?.R?.c || (+row.L.w || 0) !== (+row.R.w || 0)) continue;
+    L += +row.L.r || 0; R += +row.R.r || 0; pairs++;
+  }
+  if (pairs < 3) return null;
+  const diff = (L - R) / Math.max(L, R, 1);
+  return { L: round(L / pairs, 1), R: round(R / pairs, 1), diff, pairs, weaker: Math.abs(diff) >= 0.08 ? (diff > 0 ? 'Right' : 'Left') : null };
+}
+const weekStart = (d) => addDays(d, -((parseDate(d).getDay() + 6) % 7)); // Monday
+function weeklyVolume(weeks = 12) {
+  const end = weekStart(todayStr()), out = [];
+  for (let i = weeks - 1; i >= 0; i--) out.push({ week: addDays(end, -7 * i), by: {} });
+  const idx = Object.fromEntries(out.map((w, i) => [w.week, i]));
+  for (const d of Object.keys(data.days)) {
+    const wi = idx[weekStart(d)];
+    if (wi == null) continue;
+    for (const b of liftBlocks()) for (const e of b.exercises) for (const row of data.days[d].sets?.[e.id] || []) if (row) for (const c of Object.values(row)) {
+      if (c?.c && +c.w > 0) out[wi].by[b.id] = (out[wi].by[b.id] || 0) + (+c.r || 0) * +c.w;
+    }
+  }
+  return out;
+}
+
+// Daily targets from your goal and real maintenance (1 lb a week is about 500 kcal a day).
+function targets(date) {
+  const g = data.settings.goal || {}, m = maintenance();
+  const w = latestWeight(date);
+  const protein = w ? Math.round(w * (+g.proteinPerLb || 0.8)) : null;
+  if (!m && !g.kcalOverride) return protein ? { kcal: null, protein } : null;
+  const delta = g.mode === 'cut' ? -(+g.rate || 0.5) * 500 : g.mode === 'bulk' ? (+g.rate || 0.25) * 500 : 0;
+  const off = g.adjustTimeOff && sched(date).kind === 'off' && m ? -Math.round((m.training || 0) / 10) * 10 : 0;
+  const kcal = Math.round(((+g.kcalOverride || (m.kcal + delta)) + off) / 10) * 10;
+  return { kcal, protein, base: m?.kcal, delta, off, source: m?.source };
+}
+
+// ======================================================================
 // App state and routing
 // ======================================================================
 const ui = {
@@ -495,6 +612,7 @@ function render() {
   v.scrollTop = scroll;
   if (ui.pop) { $(ui.pop)?.classList.add('pop'); ui.pop = null; }
   if (ui.view === 'progress') hydrateCharts();
+  if (ui.view === 'nutrition') hydrateNutritionCharts();
   if (ui.view === 'settings' && window.api) {
     window.api.loginItem().then(on => { const t = $('#login-toggle'); if (t) t.checked = on; }).catch(() => {});
     window.api.info().then(i => { const el = $('#data-dir'); if (el) el.textContent = `Saved automatically to ${i.dataDir}, with 30 days of daily backups.`; }).catch(() => {});
@@ -531,6 +649,7 @@ function viewToday() {
   const rec = data.days[date];
   const p = progress(rec);
   const cal = calories(date);
+  const tg = targets(date);
   const st = stats();
   const isFuture = date > today;
   const isPast = date < today;
@@ -567,10 +686,10 @@ function viewToday() {
         </div>
         <div class="summary">
           <div class="sum-item sum-ring">${ring(sc.kind === 'rest' && !p.done ? 0 : p.pct, `${Math.round(p.pct * 100)}%`)}<div><b>${p.done}/${p.total}</b><small>checks done</small></div></div>
-          <div class="sum-item"><b>${num(cal.inK)}</b><small>kcal in</small></div>
+          <div class="sum-item"><b>${num(cal.inK)}</b><small>${tg?.kcal ? `of ${num(tg.kcal)} kcal` : 'kcal in'}</small></div>
           <div class="sum-item"><b>${num(cal.out)}</b><small>kcal out</small></div>
           <div class="sum-item"><b class="${cal.net == null ? '' : cal.net > 0 ? 'pos' : 'neg'}">${cal.net == null ? '–' : (cal.net > 0 ? '+' : '') + num(cal.net)}</b><small>net</small></div>
-          <div class="sum-item"><b>${num(cal.protein)}<i>g</i></b><small>protein</small></div>
+          <div class="sum-item"><b>${num(cal.protein)}<i>g</i></b><small>${tg?.protein ? `of ${tg.protein} g protein` : 'protein'}</small></div>
           <div class="sum-item"><b>${st.streak}</b><small>day streak</small></div>
         </div>
       </div>
@@ -586,6 +705,7 @@ function viewToday() {
         ${caloriesCard(date, cal)}
         ${nutritionCard(date)}
         ${weightCard(date)}
+        ${waterCard(date)}
         ${mealsCard(date)}
       </aside>
     </div>
@@ -820,6 +940,7 @@ function caloriesCard(date, cal) {
       <div><small>Net</small><b class="${cal.net == null ? '' : cal.net > 0 ? 'pos' : 'neg'}">${cal.net == null ? '–' : (cal.net > 0 ? '+' : '') + num(cal.net)}</b></div>
     </div>
     <div class="cal-bar"><span style="width:${Math.min(pct, 1) * 100}%"></span>${pct > 1 ? `<i style="left:${100 / pct}%"></i>` : ''}</div>
+    ${(() => { const t = targets(date); if (!t?.kcal) return ''; const left = t.kcal - cal.inK; return `<p class="goal-line"><b>Goal ${num(t.kcal)} kcal</b>${t.protein ? `, ${t.protein} g protein` : ''}. ${left >= 0 ? `${num(left)} kcal to go` : `${num(-left)} kcal over`}${t.off ? '. Lower on time-off days.' : '.'}</p>`; })()}
     <p class="hint">${needsProfile
       ? 'Add your age and height in Settings, and log your weight, to estimate calories out.'
       : esc(cal.basis) + (cal.liftK || cal.cardioK ? `. Lifting ≈ ${num(cal.liftK)}${cal.drops ? ` (${num(cal.dropK)} from ${cal.drops} drop set${cal.drops === 1 ? '' : 's'})` : ''}, cardio ≈ ${num(cal.cardioK)} kcal.` : '.')}
@@ -864,6 +985,33 @@ function activityCard(date) {
     </div>
     ${extras ? `<div class="act-extras">${extras}</div>` : ''}
   </section>`;
+}
+
+function waterCard(date) {
+  const n = +data.days[date]?.water || 0, goal = +data.settings.waterGoal || 8, max = Math.max(goal, n);
+  return `<section class="card water-card">
+    <header class="card-head"><h2>Water</h2><span class="hint">${n} of ${goal} cups (8 oz)</span></header>
+    <div class="cups">${Array.from({ length: max }, (_, k) => `<button class="cup ${k < n ? 'on' : ''}" data-action="water" data-n="${k + 1}" aria-label="${k + 1} cups"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12l-1.6 17.2a2 2 0 0 1-2 1.8H9.6a2 2 0 0 1-2-1.8Z"/><path class="fill" d="M6.9 9h10.2l-1.1 11.1a1 1 0 0 1-1 .9H9a1 1 0 0 1-1-.9Z"/></svg></button>`).join('')}<button class="rep-more" data-action="water" data-n="${n + 1}" aria-label="Add a cup">+</button></div>
+  </section>`;
+}
+
+function openSwap(date, mealId, itemId) {
+  const m = data.meals.find(x => x.id === mealId), it = m?.items.find(x => x.id === itemId);
+  if (!it) return;
+  const cur = data.days[date]?.food?.[it.id];
+  const opts = (data.swapFoods || []).map(sw => `<button class="swap-opt ${cur?.swapId === sw.id ? 'on' : ''}" data-swap="${sw.id}"><b>${esc(sw.name)}</b><small>${esc(sw.unit)}, ${num(sw.kcal)} kcal, ${num(sw.protein)} g protein</small></button>`).join('');
+  openModal(`<h2>Swap ${esc(it.name.toLowerCase())}</h2>
+    <p>Just for ${date === todayStr() ? 'today' : esc(longDate(date, { weekday: 'long', month: 'short', day: 'numeric' }))}. Your meal plan stays the same.</p>
+    <div class="swap-list">${cur?.swapId ? `<button class="swap-opt revert" data-swap="__plan"><b>Back to ${esc(it.name.toLowerCase())}</b><small>${esc(it.unit)}, ${num(it.kcal)} kcal</small></button>` : ''}${opts || '<p class="hint">No swap foods yet. Add some in Settings → Meal plan.</p>'}</div>
+    <div class="modal-actions"><button class="btn btn-ghost" data-close>Cancel</button></div>`, (root, close) => {
+    root.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-swap]'); if (!b) return;
+      const r = getDay(date), id = b.dataset.swap;
+      if (id === '__plan') r.food[it.id] = snap(it, true);
+      else { const sw = data.swapFoods.find(x => x.id === id); r.food[it.id] = { ...snap(sw, true, sw.qty), swapId: sw.id, unit: sw.unit }; }
+      save(); close(); render(); toast(id === '__plan' ? 'Back to your plan' : 'Swapped for today');
+    });
+  });
 }
 
 function weightCard(date) {
@@ -912,12 +1060,12 @@ function proteinGoal(date) {
 function nutritionCard(date) {
   const { t, top, count } = nutrition(dayEntries(data.days[date]));
   if (!count) return `<section class="card nut-card"><header class="card-head"><h2>Nutrition</h2><button class="link-btn" data-nav="nutrition">Full breakdown</button></header><p class="hint">Check off food below to see carbs, fat, fiber, sodium, vitamins and minerals.</p></section>`;
-  const g = proteinGoal(date);
+  const tg = targets(date), g = tg?.protein ? { lo: tg.protein, hi: tg.protein } : proteinGoal(date);
   const keys = ['fiber', 'sugar', 'satFat', 'sodium', 'chol'];
   return `<section class="card nut-card">
     <header class="card-head"><h2>Nutrition</h2><button class="link-btn" data-nav="nutrition">Full breakdown</button></header>
     ${macroSplit(t)}
-    ${g ? `<div class="goal-row"><span>Protein goal</span><b>${num(t.protein)} of ${g.lo}–${g.hi} g</b><span class="nut-bar"><i style="width:${Math.min(t.protein / g.lo, 1) * 100}%"></i></span></div>` : ''}
+    ${g ? `<div class="goal-row"><span>Protein goal</span><b>${num(t.protein)} of ${g.lo === g.hi ? g.lo : `${g.lo}–${g.hi}`} g</b><span class="nut-bar"><i style="width:${Math.min(t.protein / g.lo, 1) * 100}%"></i></span></div>` : ''}
     <div class="nut-list">${keys.map(k => nutRow(NDEF[k], t[k])).join('')}</div>
     <details class="nut-more"><summary>Vitamins and minerals</summary><div class="nut-list">${NUTRIENTS.filter(n => n.micro).map(n => nutRow(n, t[n.k])).join('')}</div></details>
     <p class="hint small">% of the daily value on US food labels.</p>
@@ -936,16 +1084,17 @@ function mealsCard(date) {
       <div class="meal-head">
         <button class="check sm ${all ? 'on' : ''}" data-action="meal-all" data-meal="${m.id}" aria-label="Check all of ${esc(m.name)}">${ICON.check}</button>
         <h3>${esc(m.name)}</h3>
-        <span class="meal-kcal">${on ? num(kc) + ' kcal' : `${m.items.length} items`}</span>
+        <span class="meal-kcal">${on ? num(kc) + ' kcal' : `${m.items.length} item${m.items.length === 1 ? '' : 's'}`}</span>
       </div>
       <ul>${m.items.map(it => {
         const f = rec?.food?.[it.id];
         const qty = f?.qty ?? it.qty;
         return `<li class="food ${f?.on ? 'on' : ''}" data-meal="${m.id}" data-item="${it.id}">
           <button class="check sm ${f?.on ? 'on' : ''}" data-action="food" aria-label="Ate ${esc(it.name)}">${ICON.check}</button>
-          <span class="food-name">${esc(it.name)}<small>${esc(it.unit)}</small></span>
+          <span class="food-name">${f?.swapId ? `${esc(f.name)}<small>${esc(f.unit || '')}, instead of ${esc(it.name.toLowerCase())}</small>` : `${esc(it.name)}<small>${esc(it.unit)}</small>`}</span>
           <span class="qty"><button data-action="qty" data-d="-1" aria-label="Less">−</button><b>${qty}</b><button data-action="qty" data-d="1" aria-label="More">+</button></span>
-          <span class="food-kcal">${num(qty * it.kcal)}</span>
+          <span class="food-kcal">${num(qty * (f?.swapId ? f.kcal : it.kcal))}</span>
+          <button class="swap-btn ${f?.swapId ? 'on' : ''}" data-action="swap" aria-label="Swap ${esc(it.name)}" title="Swap for something else today"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4 3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/></svg></button>
         </li>`;
       }).join('')}</ul>
     </div>`;
@@ -973,6 +1122,37 @@ function mealsCard(date) {
 // ======================================================================
 // Consistency view
 // ======================================================================
+function yearGrid() {
+  const t = todayStr(), end = addDays(weekStart(t), 6), start = addDays(weekStart(t), -7 * 52);
+  let cols = '';
+  for (let w = start; w <= end; w = addDays(w, 7)) {
+    let cells = '';
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(w, i), s = d < data.settings.startDate ? null : sched(d);
+      const cls = !s || d > t ? 'yg-empty' : `st-${s.status}`;
+      cells += `<i class="yg ${cls}" title="${esc(longDate(d, { weekday: 'short', month: 'short', day: 'numeric' }))}${s && d <= t ? ': ' + s.status : ''}"></i>`;
+    }
+    cols += `<div class="yg-col">${cells}</div>`;
+  }
+  return `<div class="year-grid">${cols}</div>`;
+}
+function weekdayPatterns() {
+  const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], sc = schedule(), t = todayStr();
+  const rows = names.map(() => ({ done: 0, missed: 0, reasons: {} }));
+  for (const [d, s] of Object.entries(sc)) {
+    if (d > t || (s.kind !== 'train' && s.status !== 'missed')) continue;
+    const wd = (parseDate(d).getDay() + 6) % 7;
+    if (s.status === 'done' || s.status === 'extra') rows[wd].done++;
+    else if (s.status === 'missed') { rows[wd].missed++; const r = data.days[d]?.miss?.reason || 'unset'; rows[wd].reasons[r] = (rows[wd].reasons[r] || 0) + 1; }
+  }
+  const total = rows.reduce((a, r) => a + r.done + r.missed, 0);
+  if (total < 3) return '<p class="empty-msg">Patterns show up after a week or two of training days.</p>';
+  const worst = rows.map((r, i) => ({ ...r, i })).filter(r => r.missed).sort((a, b) => b.missed - a.missed)[0];
+  const top = worst ? Object.entries(worst.reasons).sort((a, b) => b[1] - a[1])[0] : null;
+  return `${worst ? `<p class="pattern-line">You miss most on <b>${names[worst.i]}days</b>${top && top[0] !== 'unset' ? `, usually because of ${esc((reasonOf(top[0])?.label || '').toLowerCase())}` : ''}.</p>` : '<p class="pattern-line">No misses yet on any weekday.</p>'}
+    <div class="bars">${rows.map((r, i) => { const n = r.done + r.missed; return `<div class="bar-row wd"><span>${names[i]}</span><div class="bar">${n ? `<i style="width:${r.done / n * 100}%;background:var(--green)"></i>` : ''}</div><b>${n ? Math.round(r.done / n * 100) + '%' : '–'}</b></div>`; }).join('')}</div>
+    <p class="hint">Share of scheduled training days you finished, by weekday.</p>`;
+}
 function viewCalendar() {
   const st = stats(), sc = schedule(), today = todayStr();
   const [y, m] = ui.month.split('-').map(Number);
@@ -1021,9 +1201,15 @@ function viewCalendar() {
       <section class="card">
         <header class="card-head"><h2>Why you missed</h2></header>
         ${reasonRows.length ? `<div class="bars">${reasonRows.map(([id, n]) => { const r = reasonOf(id); return `<div class="bar-row"><span>${r ? r.label : 'No reason given'}</span><div class="bar"><i style="width:${n / maxR * 100}%;background:${r ? r.color : 'var(--faint)'}"></i></div><b>${n}</b></div>`; }).join('')}</div>` : '<p class="empty-msg">No missed days. Keep it that way.</p>'}
+        <h3 class="sub-h">By weekday</h3>
+        ${weekdayPatterns()}
         ${recentMiss.length ? `<h3 class="sub-h">Recent misses</h3><ul class="miss-list">${recentMiss.map(d => { const r = reasonOf(data.days[d]?.miss?.reason); return `<li><button class="link-row" data-action="open-day" data-date="${d}"><span>${esc(longDate(d, { weekday: 'short', month: 'short', day: 'numeric' }))}</span><span class="reason-dot" style="--rc:${r?.color || 'var(--faint)'}">${r ? r.label : 'Add reason'}</span>${data.days[d]?.miss?.note ? `<small>${esc(data.days[d].miss.note)}</small>` : ''}</button></li>`; }).join('')}</ul>` : ''}
       </section>
     </div>
+    <section class="card year-card">
+      <header class="card-head"><h2>Your year</h2><span class="hint">Each square is a day, Monday at the top</span></header>
+      ${yearGrid()}
+    </section>
   </div>`;
 }
 
@@ -1045,13 +1231,21 @@ function viewProgress() {
         ${liftsTable()}
       </section>
       <section class="card">
-        <header class="card-head"><h2>Body weight</h2><div class="inline-form"><label class="wt"><input type="number" step="0.1" data-input="quick-weight" placeholder="0.0" aria-label="Today's weight"><span>lb</span></label></div></header>
+        <header class="card-head"><h2>Body weight</h2>${(() => { const r = weeklyRate(); return r == null ? '' : `<span class="delta ${r < -0.05 ? 'down' : r > 0.05 ? 'up' : ''}">${r > 0 ? '+' : ''}${r} lb/week</span>`; })()}<div class="inline-form"><label class="wt"><input type="number" step="0.1" data-input="quick-weight" placeholder="0.0" aria-label="Today's weight"><span>lb</span></label></div></header>
         <div class="chart" data-chart="weight"></div>
       </section>
       <section class="card">
         <header class="card-head"><h2>Strength</h2><select data-input="prog-ex" aria-label="Exercise">${opts}</select></header>
         <div class="chart" data-chart="strength"></div>
-        <p class="hint">${best ? `Best: ${best.top} lb on ${shortDate(best.date)}. ${sessions.length} session${sessions.length === 1 ? '' : 's'} logged.` : 'Log weights on your sets to see your top weight per session.'}</p>
+        <p class="hint">${best ? `Best: ${best.top} lb on ${shortDate(best.date)}. ${sessions.length} session${sessions.length === 1 ? '' : 's'} logged. Estimated max combines weight and reps (Epley formula), so extra reps count as progress.` : 'Log weights on your sets to see your top weight per session.'}</p>
+      </section>
+      <section class="card">
+        <header class="card-head"><h2>Left vs right</h2><span class="hint">Last 4 sessions</span></header>
+        ${balanceTable()}
+      </section>
+      <section class="card">
+        <header class="card-head"><h2>Weekly volume</h2><span class="hint">Reps × weight, by block</span></header>
+        <div class="chart" data-chart="volume"></div>
       </section>
       <section class="card span-2">
         <header class="card-head"><h2>Activity</h2><span class="hint">From Apple Health</span></header>
@@ -1072,9 +1266,17 @@ function liftsTable() {
       : p.kind === 'up' ? `<span class="prog-chip up">Ready: ${p.to} lb next time</span>`
       : p.kind === 'stuck' ? '<span class="prog-chip stuck">Stuck for 3 sessions</span>'
       : `<span class="prog-chip build">Building to ${p.target} reps</span>`;
-    return `<tr class="hue-${b.hue}"><td><i class="dot"></i>${esc(e.name)}</td><td>${p ? (p.from ?? p.at) + ' lb' : '–'}</td><td>${p?.reps || '–'}</td><td>${e.repMin}–${e.repMax}</td><td>${status}</td></tr>`;
+    const ss = sessionsOf(e.id, t, 9999), e1 = ss.length ? sessionE1RM(ss[0].sets) : 0;
+    const old = ss.find(x => diffDays(x.date, ss[0]?.date) >= 21), e1old = old ? sessionE1RM(old.sets) : null;
+    const chg = e1 && e1old ? round(e1 - e1old, 1) : null;
+    return `<tr class="hue-${b.hue}"><td><i class="dot"></i>${esc(e.name)}</td><td>${p ? (p.from ?? p.at) + ' lb' : '–'}</td><td>${p?.reps || '–'}</td><td>${e1 ? e1 + ' lb' : '–'}${chg ? ` <small class="${chg > 0 ? 'gain' : 'loss'}">${chg > 0 ? '+' : ''}${chg}</small>` : ''}</td><td>${e.repMin}–${e.repMax}</td><td>${status}</td></tr>`;
   })).join('');
-  return `<table class="lifts"><thead><tr><th>Exercise</th><th>Working weight</th><th>Last reps</th><th>Range</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table class="lifts"><thead><tr><th>Exercise</th><th>Working weight</th><th>Last reps</th><th>Est. max</th><th>Range</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function balanceTable() {
+  const rows = allExercises().map(e => ({ e, b: sideBalance(e) })).filter(x => x.b);
+  if (!rows.length) return '<p class="empty-msg">Log a few sessions with weights on both sides to compare them.</p>';
+  return `<table class="lifts"><thead><tr><th>Exercise</th><th>Left</th><th>Right</th><th></th></tr></thead><tbody>${rows.map(({ e, b }) => `<tr><td>${esc(e.name)}</td><td>${b.L}</td><td>${b.R}</td><td>${b.weaker ? `<span class="prog-chip stuck">${b.weaker} ${Math.round(Math.abs(b.diff) * 100)}% fewer reps</span>` : '<span class="prog-chip up-soft">Balanced</span>'}</td></tr>`).join('')}</tbody></table><p class="hint">Average reps per set. A gap over 8% is flagged; leading each set with the weaker side is a common fix.</p>`;
 }
 function rangeStart() { return ui.range ? addDays(todayStr(), -ui.range + 1) : '0000-00-00'; }
 function exSessions(exId) {
@@ -1091,10 +1293,17 @@ function hydrateCharts() {
   const weights = [];
   const dates = new Set([...Object.keys(data.days), ...Object.keys(data.health)]);
   for (const d of [...dates].sort()) { if (d < start || d > today) continue; const w = weightOn(d); if (w) weights.push({ x: d, y: w }); }
-  drawChart($('[data-chart="weight"]'), [{ name: 'Weight', color: 'var(--primary)', points: weights }], { unit: 'lb', empty: 'Log your weight on the Today page or above.' });
+  const trend = weightTrend().list.filter(p => p.x >= start);
+  drawChart($('[data-chart="weight"]'), [
+    { name: 'Weigh-ins', color: 'color-mix(in srgb, var(--primary) 45%, transparent)', points: weights, dotsOnly: true },
+    { name: 'Trend', color: 'var(--primary)', points: weights.length > 1 ? trend : [], noDots: true },
+  ], { unit: 'lb', empty: 'Log your weight on the Today page or above.' });
+  const vol = weeklyVolume(ui.range && ui.range <= 30 ? 6 : 12);
+  drawBars($('[data-chart="volume"]'), vol.map(v => shortDate(v.week)), liftBlocks().map(b => ({ name: b.name, color: `var(--${({ b1: 'blue', b2: 'red', b3: 'yellow' })[b.hue] || 'green'})`, values: vol.map(v => Math.round(v.by[b.id] || 0)) })), { unit: 'lb', empty: 'Log sets with weights to see weekly volume.' });
   const ses = exSessions(ui.progEx);
   drawChart($('[data-chart="strength"]'), [
     { name: 'Top weight', color: 'var(--red)', points: ses.filter(s => s.top).map(s => ({ x: s.date, y: s.top })) },
+    { name: 'Estimated max', color: 'var(--green)', points: ses.filter(s => s.top).map(s => ({ x: s.date, y: sessionE1RM(data.days[s.date].sets?.[ui.progEx]) })) },
   ], { unit: 'lb', empty: 'No sessions with weights yet.' });
   const inPts = [], outPts = [];
   const from = ui.range ? start : data.settings.startDate;
@@ -1140,8 +1349,9 @@ function drawChart(el, series, { unit = '', empty = 'No data yet.' } = {}) {
     if (!s.points.length) return '';
     const pts = s.points.map(p => [sx(parseDate(p.x).getTime()), sy(p.y)]);
     const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
-    const dots = pts.length <= 60 ? pts.map(p => `<circle cx="${p[0]}" cy="${p[1]}" r="3" fill="${s.color}"/>`).join('') : '';
-    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.25" stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
+    const dots = !s.noDots && (s.dotsOnly || pts.length <= 60) ? pts.map(p => `<circle cx="${p[0]}" cy="${p[1]}" r="${s.dotsOnly ? 3.5 : 3}" fill="${s.color}"/>`).join('') : '';
+    if (s.dotsOnly) return dots;
+    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.dash ? 1.5 : 2.25}" ${s.dash ? 'stroke-dasharray="5 4"' : ''} stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
   }).join('');
   const legend = series.length > 1 ? `<div class="chart-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>` : '';
   el.innerHTML = `${legend}<div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">${g}${paths}<line class="hover-line" y1="${P.t}" y2="${H - P.b}" x1="-10" x2="-10"/></svg><div class="tip"></div></div>`;
@@ -1160,6 +1370,28 @@ function drawChart(el, series, { unit = '', empty = 'No data yet.' } = {}) {
     tip.classList.add('show');
   });
   svg.addEventListener('mouseleave', () => { tip.classList.remove('show'); line.setAttribute('x1', -10); line.setAttribute('x2', -10); });
+}
+// Stacked bar chart: one bar per category, series stacked.
+function drawBars(el, cats, series, { unit = '', empty = 'No data yet.' } = {}) {
+  if (!el) return;
+  const totals = cats.map((_, i) => series.reduce((a, s) => a + (s.values[i] || 0), 0));
+  if (!totals.some(Boolean)) { el.innerHTML = `<p class="empty-msg">${esc(empty)}</p>`; return; }
+  const W = Math.max(320, el.clientWidth || 600), H = 220, P = { l: 50, r: 10, t: 12, b: 26 };
+  const max = Math.max(...totals) * 1.1, ticks = niceTicks(0, max, 4);
+  const bw = (W - P.l - P.r) / cats.length, sy = (v) => P.t + (1 - v / max) * (H - P.t - P.b);
+  let g = ticks.map(v => `<line x1="${P.l}" x2="${W - P.r}" y1="${sy(v)}" y2="${sy(v)}" class="grid"/><text x="${P.l - 8}" y="${sy(v) + 4}" text-anchor="end" class="axis">${v >= 1000 ? round(v / 1000, 1) + 'k' : num(v)}</text>`).join('');
+  cats.forEach((c, i) => {
+    let y = 0;
+    const x = P.l + i * bw + bw * 0.18, w = bw * 0.64;
+    for (const s of series) {
+      const v = s.values[i] || 0; if (!v) continue;
+      const top = sy(y + v), h = sy(y) - top;
+      g += `<rect x="${x}" y="${top}" width="${w}" height="${Math.max(h - 1.5, 0)}" rx="4" fill="${s.color}"><title>${esc(c)}: ${esc(s.name)} ${num(v)} ${unit}</title></rect>`;
+      y += v;
+    }
+    if (i % Math.ceil(cats.length / 6) === 0) g += `<text x="${x + w / 2}" y="${H - 6}" text-anchor="middle" class="axis">${esc(c)}</text>`;
+  });
+  el.innerHTML = `<div class="chart-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div><svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">${g}</svg>`;
 }
 function niceTicks(a, b, n) {
   const span = b - a, step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0));
@@ -1208,6 +1440,91 @@ function insights(t, top, date) {
   return { list: out, covered };
 }
 
+function goalsTop() {
+  const g = data.settings.goal, m = maintenance(), t = targets(todayStr()), rate = weeklyRate();
+  const modes = [['cut', 'Lose weight'], ['maintain', 'Maintain'], ['bulk', 'Gain weight']];
+  const wk = averageNutrition(7);
+  const mText = !m ? 'Add your age and height in Settings and log your weight to estimate it.'
+    : m.source === 'adaptive' ? `Measured from your last ${m.days} days: ${m.foodDays} days of food, ${m.weighIns} weigh-ins, trend ${m.deltaLb > 0 ? '+' : ''}${m.deltaLb} lb.`
+    : `Estimated from your profile for now. After 2 weeks of food logs and 4+ weigh-ins, it switches to your real number.`;
+  return `<section class="card goals-card">
+    <div class="goals-grid">
+      <div>
+        <header class="card-head"><h2>Goal</h2></header>
+        <div class="row-gap wrap">${modes.map(([v, l]) => `<button class="chip ${g.mode === v ? 'chip-on' : ''}" data-action="goal-mode" data-v="${v}">${l}</button>`).join('')}</div>
+        <div class="form-grid goal-form">
+          ${g.mode !== 'maintain' ? `<label class="field"><span>Rate (lb per week)</span><select data-goal2="rate">${[0.25, 0.5, 0.75, 1].map(v => `<option value="${v}" ${+g.rate === v ? 'selected' : ''}>${v}</option>`).join('')}</select></label>` : ''}
+          <label class="field"><span>Protein (g per lb of body weight)</span><input type="number" step="0.05" min="0.5" max="1.5" data-goal2="proteinPerLb" value="${g.proteinPerLb}"></label>
+          <label class="field"><span>Calorie target override</span><input type="number" step="10" data-goal2="kcalOverride" value="${g.kcalOverride || ''}" placeholder="Automatic"></label>
+        </div>
+        <label class="toggle"><input type="checkbox" data-goal2="adjustTimeOff" ${g.adjustTimeOff ? 'checked' : ''}><span><b>Lower calories on time-off days</b><small>Takes out what you'd normally burn lifting and playing Beat Saber (about ${num(m?.training || 0)} kcal a day). Protein stays the same. Your surgeon or a dietitian may want something different.</small></span></label>
+      </div>
+      <div class="goal-numbers">
+        <div class="gn main"><small>Daily target</small><b>${t?.kcal ? num(t.kcal) : '–'}<i> kcal</i></b><span>${t?.protein ? `${t.protein} g protein` : 'Log your weight for a protein target'}</span></div>
+        <div class="gn"><small>Maintenance</small><b>${m ? num(m.kcal) : '–'}<i> kcal</i></b><span>${esc(mText)}</span></div>
+        <div class="gn"><small>Trend</small><b>${rate == null ? '–' : `${rate > 0 ? '+' : ''}${rate}`}<i> lb/week</i></b><span>${wk.days ? `This week: ${num(wk.t.kcal)} kcal and ${num(wk.t.protein)} g protein a day on average` : 'No food logged this week yet'}</span></div>
+      </div>
+    </div>
+    <div class="chart" data-chart="adherence"></div>
+  </section>`;
+}
+function goalsCard() { return ''; }
+function trendsCard() {
+  const keys = ['sodium', 'fiber', 'vitC', 'potassium', 'chol', 'satFat', 'calcium', 'protein'];
+  const k = ui.trendKey || 'sodium';
+  return `<section class="card trends-card">
+    <header class="card-head"><h2>Nutrient trends</h2><span class="hint">Weekly average vs daily value</span></header>
+    <div class="row-gap wrap">${keys.map(x => `<button class="chip ${x === k ? 'chip-on' : ''}" data-action="trend-key" data-v="${x}">${esc(NDEF[x].label)}</button>`).join('')}</div>
+    <div class="chart" data-chart="nutrient-trend"></div>
+  </section>`;
+}
+function groceryList(days) {
+  const map = new Map();
+  for (const m of data.meals) for (const it of m.items) {
+    if (/^water/i.test(it.name)) continue;
+    const key = it.name.toLowerCase() + '|' + it.unit;
+    const cur = map.get(key) || { name: it.name, unit: it.unit, qty: 0 };
+    cur.qty += (+it.qty || 0) * days; map.set(key, cur);
+  }
+  return [...map.values()].filter(x => x.qty > 0);
+}
+function groceryCard() {
+  const days = ui.groceryDays || 7, list = groceryList(days);
+  const text = list.map(x => `${x.name}: ${round(x.qty, 1)} × ${x.unit}`).join('\n');
+  return `<section class="card grocery-card">
+    <header class="card-head"><h2>Grocery list</h2><div class="row-gap">${[7, 14].map(d => `<button class="chip ${d === days ? 'chip-on' : ''}" data-action="grocery-days" data-v="${d}">${d} days</button>`).join('')}<button class="btn btn-small" data-action="copy" data-text="${esc(text)}">Copy</button></div></header>
+    <ul class="grocery">${list.map(x => `<li><span>${esc(x.name)}</span><b>${round(x.qty, 1)}</b><small>× ${esc(x.unit)}</small></li>`).join('')}</ul>
+    <p class="hint">From your meal plan at the default amounts. Swaps aren't included.</p>
+  </section>`;
+}
+function hydrateNutritionCharts() {
+  const t = todayStr(), from = addDays(t, -29);
+  const inPts = [], tgPts = [], pPts = [], ptPts = [];
+  for (let d = from < data.settings.startDate ? data.settings.startDate : from; d <= t; d = addDays(d, 1)) {
+    const e = dayEntries(data.days[d]), tg = targets(d);
+    if (e.length) { const n = nutrition(e).t; inPts.push({ x: d, y: Math.round(n.kcal) }); pPts.push({ x: d, y: Math.round(n.protein) }); }
+    if (tg?.kcal) tgPts.push({ x: d, y: tg.kcal });
+    if (tg?.protein) ptPts.push({ x: d, y: tg.protein });
+  }
+  drawChart($('[data-chart="adherence"]'), [
+    { name: 'Calories in', color: 'var(--cyan)', points: inPts },
+    { name: 'Calorie target', color: 'var(--cyan)', points: tgPts, dash: true, noDots: true },
+  ], { unit: 'kcal', empty: 'Check off food on the Today page to compare it with your target.' });
+  // weekly nutrient trend
+  const k = ui.trendKey || 'sodium', def = NDEF[k], pts = [], dv = [];
+  const end = weekStart(t);
+  for (let i = 11; i >= 0; i--) {
+    const ws = addDays(end, -7 * i);
+    let sum = 0, n = 0;
+    for (let d = ws; d <= addDays(ws, 6) && d <= t; d = addDays(d, 1)) { const e = dayEntries(data.days[d]); if (e.length) { sum += nutrition(e).t[k]; n++; } }
+    if (n) { pts.push({ x: ws, y: round(sum / n, 1) }); if (def.dv) dv.push({ x: ws, y: def.dv }); }
+  }
+  drawChart($('[data-chart="nutrient-trend"]'), [
+    { name: `${def.label} (${def.unit})`, color: def.limit ? 'var(--red)' : 'var(--green)', points: pts },
+    ...(dv.length ? [{ name: def.limit ? 'Daily value (limit)' : 'Daily value', color: 'var(--faint)', points: dv, dash: true, noDots: true }] : []),
+  ], { unit: def.unit, empty: 'Log food for a week to see trends.' });
+}
+
 function viewNutrition() {
   const scopes = [['plan', 'Full meal plan'], ['today', 'Today'], ['week', '7-day average'], ['month', '30-day average']];
   const sc = ui.nutScope || 'plan';
@@ -1219,9 +1536,11 @@ function viewNutrition() {
   const head = `
   <div class="page nutrition">
     <header class="page-head"><h1>Nutrition</h1><p>What your diet adds up to. Percentages use the FDA daily values printed on US food labels.</p></header>
+    ${goalsTop()}
     <div class="row-gap wrap range">${scopes.map(([v, l]) => `<button class="chip ${sc === v ? 'chip-on' : ''}" data-action="nut-scope" data-v="${v}">${l}</button>`).join('')}</div>
     <p class="hint scope-note">${esc(note)}</p>`;
-  if (!count) return head + `<div class="card"><p class="empty-msg">Check off food on the Today page and it shows up here.</p></div></div>`;
+  const extras = goalsCard() + trendsCard() + groceryCard();
+  if (!count) return head + `<div class="card"><p class="empty-msg">Check off food on the Today page and it shows up here.</p></div>${extras}</div>`;
   const pk = t.protein * 4, ck = t.carbs * 4, fk = t.fat * 9, sum = pk + ck + fk || 1;
   const ins = insights(t, top, todayStr());
   const mealRows = Object.entries(meals).map(([name, m]) => `<tr><td>${esc(name)}</td><td>${num(m.kcal)}</td><td>${fmtN(m.protein, 'g')}</td><td>${fmtN(m.carbs, 'g')}</td><td>${fmtN(m.fat, 'g')}</td><td>${fmtN(m.fiber, 'g')}</td><td>${num(m.sodium)}</td></tr>`).join('');
@@ -1255,6 +1574,7 @@ function viewNutrition() {
         </section>
       </div>
     </div>
+    ${extras}
   </div>`;
 }
 
@@ -1303,8 +1623,8 @@ function viewSettings() {
       <div class="edit-table"><span>Exercise</span><span>Sets</span><span>Reps min</span><span>Reps max</span><span>lb min</span><span>lb max</span><span>Per side</span><span>Dropset</span><span></span>
       ${b.exercises.map(e => `<input data-edit="ex" data-b="${b.id}" data-id="${e.id}" data-k="name" value="${esc(e.name)}">${['sets', 'repMin', 'repMax', 'wMin', 'wMax'].map(k => `<input type="number" data-edit="ex" data-b="${b.id}" data-id="${e.id}" data-k="${k}" value="${e[k] ?? ''}">`).join('')}<input type="checkbox" data-edit="ex" data-b="${b.id}" data-id="${e.id}" data-k="perSide" ${e.perSide ? 'checked' : ''}><input type="checkbox" data-edit="ex" data-b="${b.id}" data-id="${e.id}" data-k="drop" ${e.drop ? 'checked' : ''}><button class="icon-btn sm" data-action="del-ex" data-b="${b.id}" data-id="${e.id}" aria-label="Remove">${ICON.x}</button>`).join('')}
       </div><button class="link-btn" data-action="add-ex" data-b="${b.id}">+ Add exercise</button></div>`).join('');
-  const mealEditor = data.meals.map(m => `
-    <div class="edit-block"><h3><input class="inline-name" data-edit="meal" data-m="${m.id}" value="${esc(m.name)}" aria-label="Meal name"></h3>
+  const mealEditor = [...data.meals, mealById('__swaps')].map(m => `
+    <div class="edit-block ${m.id === '__swaps' ? 'swap-block' : ''}"><h3>${m.id === '__swaps' ? 'Swap foods <small class="hint">Pick these instead of a planned food on any day (the arrows button on Today)</small>' : `<input class="inline-name" data-edit="meal" data-m="${m.id}" value="${esc(m.name)}" aria-label="Meal name">`}</h3>
       <div class="edit-table meal-t"><span>Food</span><span>Default qty</span><span>Unit</span><span>kcal</span><span>Protein g</span><span>Carbs g</span><span>Fat g</span><span></span><span></span>
       ${m.items.map(it => `<input data-edit="food" data-m="${m.id}" data-id="${it.id}" data-k="name" value="${esc(it.name)}"><input type="number" step="0.5" data-edit="food" data-m="${m.id}" data-id="${it.id}" data-k="qty" value="${it.qty}"><input data-edit="food" data-m="${m.id}" data-id="${it.id}" data-k="unit" value="${esc(it.unit)}"><input type="number" step="any" data-edit="food" data-m="${m.id}" data-id="${it.id}" data-k="kcal" value="${it.kcal}"><input type="number" step="any" data-edit="food" data-m="${m.id}" data-id="${it.id}" data-k="protein" value="${it.protein}">${['carbs', 'fat'].map(k => `<input type="number" step="any" data-edit="food-n" data-m="${m.id}" data-id="${it.id}" data-k="${k}" value="${it.n?.[k] ?? ''}" placeholder="0">`).join('')}<button class="link-btn more-btn" data-action="food-more" data-id="${it.id}" aria-expanded="${ui.nutEdit === it.id}">${ui.nutEdit === it.id ? 'Less' : 'More'}</button><button class="icon-btn sm" data-action="del-food" data-m="${m.id}" data-id="${it.id}" aria-label="Remove">${ICON.x}</button>${ui.nutEdit === it.id ? `<div class="nut-edit"><p class="hint">Per ${esc(it.unit)}</p>${NUTRIENTS.filter(n => !['protein', 'carbs', 'fat'].includes(n.k)).map(n => `<label class="field"><span>${esc(n.label)} (${n.unit})</span><input type="number" step="any" data-edit="food-n" data-m="${m.id}" data-id="${it.id}" data-k="${n.k}" value="${it.n?.[n.k] ?? ''}" placeholder="0"></label>`).join('')}</div>` : ''}`).join('')}
       </div><button class="link-btn" data-action="add-food" data-m="${m.id}">+ Add food</button></div>`).join('');
@@ -1599,14 +1919,17 @@ document.addEventListener('click', async (e) => {
     case 'month': { const [y, m] = ui.month.split('-').map(Number); const d = new Date(y, m - 1 + (+a.dataset.d), 1); ui.month = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; return render(); }
     case 'range': ui.range = +a.dataset.v; return render();
     case 'nut-scope': ui.nutScope = a.dataset.v; return render();
+    case 'trend-key': ui.trendKey = a.dataset.v; return render();
+    case 'grocery-days': ui.groceryDays = +a.dataset.v; return render();
+    case 'goal-mode': data.settings.goal.mode = a.dataset.v; break;
     case 'food-more': ui.nutEdit = ui.nutEdit === a.dataset.id ? null : a.dataset.id; return render();
     case 'theme': data.settings.theme = a.dataset.v; applyTheme(); break;
     case 'add-ex': { const b = data.program.blocks.find(x => x.id === a.dataset.b); b.exercises.push(ex('ex-' + uid(), 'New exercise', { repMin: 8, repMax: 12 })); break; }
     case 'del-ex': { const b = data.program.blocks.find(x => x.id === a.dataset.b); if (!confirmInline(a)) return; b.exercises = b.exercises.filter(e => e.id !== a.dataset.id); break; }
     case 'add-cardio': { const b = data.program.blocks.find(x => x.id === a.dataset.b); b.items.push({ id: 'c-' + uid(), name: 'New cardio', minMin: 20, maxMin: 40, met: 6 }); break; }
     case 'del-cardio': { const b = data.program.blocks.find(x => x.id === a.dataset.b); if (!confirmInline(a)) return; b.items = b.items.filter(e => e.id !== a.dataset.id); break; }
-    case 'add-food': { const m = data.meals.find(x => x.id === a.dataset.m); const it = food('New food', 1, 'serving', 100, 0, {}); m.items.push(it); ui.nutEdit = it.id; break; }
-    case 'del-food': { const m = data.meals.find(x => x.id === a.dataset.m); if (!confirmInline(a)) return; m.items = m.items.filter(e => e.id !== a.dataset.id); break; }
+    case 'add-food': { const m = mealById(a.dataset.m); const it = food('New food', 1, 'serving', 100, 0, {}); m.items.push(it); ui.nutEdit = it.id; break; }
+    case 'del-food': { const m = mealById(a.dataset.m); if (!confirmInline(a)) return; m.items = m.items.filter(e => e.id !== a.dataset.id); break; }
     case 'import': return doImport(a.dataset.kind, a);
     case 'go-health': go('settings'); setTimeout(() => $('#health-card')?.scrollIntoView({ behavior: 'smooth' }), 50); return;
     case 'copy': {
@@ -1621,6 +1944,8 @@ document.addEventListener('click', async (e) => {
       if (r.rehab[id] >= n) ui.pop = `[data-rehab="${id}"] .check:nth-child(${n})`;
       break;
     }
+    case 'swap': { const li = a.closest('.food'); return openSwap(date, li.dataset.meal, li.dataset.item); }
+    case 'water': { const r = getDay(date), n = +a.dataset.n; r.water = (+r.water || 0) === n ? n - 1 : n; ui.pop = `.cup:nth-child(${Math.max(1, r.water)})`; break; }
     case 'pain': { const r = getDay(date); r.pain = r.pain === +a.dataset.n ? undefined : +a.dataset.n; break; }
     case 'rehab-edit': ui.rehabEdit = ui.rehabEdit === a.dataset.break ? null : a.dataset.break; return render();
     case 'rehab-del': {
@@ -1774,6 +2099,13 @@ document.addEventListener('change', (e) => {
     if (k === 'enabled' && el.checked && !data.settings.sync?.enabled) { data.settings.sync.enabled = true; data.settings.sync.key ||= newKey(); applySync(); }
     save(); el.blur(); setTimeout(refreshHealthCard, 30); return;
   }
+  if (el.dataset.goal2) {
+    const g = data.settings.goal, k = el.dataset.goal2;
+    if (k === 'adjustTimeOff') g[k] = el.checked;
+    else if (k === 'kcalOverride') g[k] = +el.value > 0 ? +el.value : null;
+    else g[k] = +el.value;
+    save(); render(); toast('Goal updated'); return;
+  }
   if (el.dataset.goal) { const g = (data.settings.goals ||= { move: 500, exercise: 30, stand: 12 }); g[el.dataset.goal] = Math.max(1, +el.value || 1); save(); toast('Saved'); return; }
 
   // Settings
@@ -1802,8 +2134,8 @@ document.addEventListener('change', (e) => {
     if (ed === 'ex') { const e2 = data.program.blocks.find(b => b.id === el.dataset.b).exercises.find(x => x.id === el.dataset.id); e2[el.dataset.k] = el.dataset.k === 'sets' ? clamp(val || 1, 1, 10) : val; }
     if (ed === 'cardio') { const it = data.program.blocks.find(b => b.id === el.dataset.b).items.find(x => x.id === el.dataset.id); it[el.dataset.k] = val; }
     if (ed === 'meal') data.meals.find(m => m.id === el.dataset.m).name = val;
-    if (ed === 'food') { const it = data.meals.find(m => m.id === el.dataset.m).items.find(x => x.id === el.dataset.id); it[el.dataset.k] = val; }
-    if (ed === 'food-n') { const it = data.meals.find(m => m.id === el.dataset.m).items.find(x => x.id === el.dataset.id); (it.n ||= {})[el.dataset.k] = val || 0; }
+    if (ed === 'food') { const it = mealById(el.dataset.m).items.find(x => x.id === el.dataset.id); it[el.dataset.k] = val; }
+    if (ed === 'food-n') { const it = mealById(el.dataset.m).items.find(x => x.id === el.dataset.id); (it.n ||= {})[el.dataset.k] = val || 0; }
     save(); toast('Saved');
   }
 });
@@ -1862,7 +2194,8 @@ function workbookSheets() {
   const fmtRange = (a, b, u = '') => a == null ? '' : `${a}${b != null && b !== a ? '–' + b : ''}${u}`;
 
   // Daily
-  const daily = [['date', 'weekday', 'plan_day', 'status', 'workout_completion_pct', 'workout_finished', 'side_sets_logged', 'drop_sets', 'lifting_kcal_est', 'cardio_minutes', 'cardio_kcal_est', 'kcal_in', 'kcal_out', 'kcal_out_source', 'net_kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugar_g', 'sodium_mg', 'body_weight_lb', 'apple_active_kcal', 'apple_resting_kcal', 'steps', 'exercise_min', 'stand_hours', 'resting_hr_bpm', 'sleep_hours', 'missed_reason', 'missed_note', 'pain_0_10', 'recovery_done', 'recovery_total', 'workout_note', 'recovery_note']];
+  const daily = [['date', 'weekday', 'plan_day', 'status', 'workout_completion_pct', 'workout_finished', 'side_sets_logged', 'drop_sets', 'lifting_kcal_est', 'cardio_minutes', 'cardio_kcal_est', 'kcal_in', 'kcal_out', 'kcal_out_source', 'net_kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugar_g', 'sodium_mg', 'body_weight_lb', 'apple_active_kcal', 'apple_resting_kcal', 'steps', 'exercise_min', 'stand_hours', 'resting_hr_bpm', 'sleep_hours', 'missed_reason', 'missed_note', 'pain_0_10', 'recovery_done', 'recovery_total', 'workout_note', 'recovery_note', 'trend_weight_lb', 'kcal_target', 'protein_target_g', 'water_cups']];
+  const trendMap = weightTrend().map;
   for (const d of allDates) {
     const rec = data.days[d], h = data.health[d] || {}, sd = sched(d), p = progress(rec), c = calories(d), n = nutrition(dayEntries(rec)).t;
     const cardioMin = cardioBlocks().flatMap(b => b.items).reduce((a, it) => a + (rec?.cardio?.[it.id]?.done ? +rec.cardio[it.id].min || 0 : 0), 0);
@@ -1874,11 +2207,12 @@ function workbookSheets() {
       hasFood ? r0(c.inK) : '', r0(c.out), c.out ? (c.basis || '') : '', hasFood && c.out ? r0(c.net) : '',
       hasFood ? r1(n.protein) : '', hasFood ? r1(n.carbs) : '', hasFood ? r1(n.fat) : '', hasFood ? r1(n.fiber) : '', hasFood ? r1(n.sugar) : '', hasFood ? r0(n.sodium) : '',
       weightOn(d) ?? '', h.active ?? '', h.basal ?? '', h.steps ?? '', h.exercise ?? '', h.stand ?? '', h.restingHR ?? '', h.sleepH ?? '',
-      rec?.miss?.reason ? reasonOf(rec.miss.reason)?.label || rec.miss.reason : '', rec?.miss?.note || '', rec?.pain ?? '', rDone, rTot, rec?.note || '', rec?.rehabNote || '']);
+      rec?.miss?.reason ? reasonOf(rec.miss.reason)?.label || rec.miss.reason : '', rec?.miss?.note || '', rec?.pain ?? '', rDone, rTot, rec?.note || '', rec?.rehabNote || '',
+      trendMap[d] != null ? r1(trendMap[d]) : '', targets(d)?.kcal ?? '', targets(d)?.protein ?? '', rec?.water ?? '']);
   }
 
   // Sets
-  const sets = [['date', 'plan_day', 'block', 'exercise', 'set', 'side', 'reps', 'weight_lb', 'drop_set_to_failure', 'completed', 'target_reps', 'exercise_note']];
+  const sets = [['date', 'plan_day', 'block', 'exercise', 'set', 'side', 'reps', 'weight_lb', 'est_1rm_lb', 'drop_set_to_failure', 'completed', 'target_reps', 'exercise_note']];
   for (const d of Object.keys(data.days).sort()) {
     const rec = data.days[d];
     for (const e of allExercises()) {
@@ -1889,7 +2223,7 @@ function workbookSheets() {
         for (const side of sidesOf(e)) {
           const cc = row[side];
           if (!cc || (!cc.c && !cc.r)) continue;
-          sets.push([d, planDayLabel(sched(d)), blockOf(e.id), e.name, i + 1, SIDE_LABEL[side].toLowerCase(), +cc.r || 0, cc.w ?? '', yn(i === e.sets - 1 && cc.d), yn(cc.c), fmtRange(e.repMin, e.repMax), i === 0 && side === sidesOf(e)[0] ? rec.exNotes?.[e.id] || '' : '']);
+          sets.push([d, planDayLabel(sched(d)), blockOf(e.id), e.name, i + 1, SIDE_LABEL[side].toLowerCase(), +cc.r || 0, cc.w ?? '', cc.w ? r1(epley(+cc.w, +cc.r || 0)) : '', yn(i === e.sets - 1 && cc.d), yn(cc.c), fmtRange(e.repMin, e.repMax), i === 0 && side === sidesOf(e)[0] ? rec.exNotes?.[e.id] || '' : '']);
         }
       });
     }
@@ -1919,6 +2253,10 @@ function workbookSheets() {
     ...Object.entries(st.reasons).map(([k, v]) => [`  missed because: ${reasonOf(k)?.label || 'no reason given'}`, v]),
     ...(s.breaks || []).map(b => [`Time off: ${b.label || 'Time off'}`, `${b.start} to ${b.end}`]),
     ['Latest body weight (lb)', lastW ?? ''],
+    ['Trend weight today (lb)', weightTrend().map[today] != null ? r1(weightTrend().map[today]) : ''],
+    ['Weight change rate (lb/week, 14-day trend)', weeklyRate() ?? ''],
+    ['Maintenance calories', maintenance() ? `${maintenance().kcal} (${maintenance().source === 'adaptive' ? 'measured from food logs and weight trend' : 'estimated from profile'})` : ''],
+    ['Goal', `${({ cut: 'lose', maintain: 'maintain', bulk: 'gain' })[s.goal?.mode] || 'maintain'}${s.goal?.mode !== 'maintain' ? ` ${s.goal.rate} lb/week` : ''}; target ${targets(today)?.kcal ?? '–'} kcal and ${targets(today)?.protein ?? '–'} g protein a day`],
     ['Body weight change, last 30 days (lb)', w30.length > 1 ? r1(weightOn(w30[w30.length - 1]) - weightOn(w30[0])) : ''],
     ...[['7-day', a7], ['30-day', a30]].flatMap(([label, a]) => a ? [
       [`${label} average calories in (${a.days} days logged)`, r0(a.t.kcal)], [`${label} average protein (g)`, r0(a.t.protein)],
@@ -1954,7 +2292,8 @@ function workbookSheets() {
     ['Calorie estimates', `Calories out is from Apple Health when synced (see kcal_out_source); otherwise estimated: resting burn (Mifflin-St Jeor) x ${s.activityFactor}, plus lifting (${s.minPerSetSide} min per logged side-set at MET ${s.liftMet}, drop sets ${s.dropMin ?? 0.5} min at MET ${s.dropMet ?? 6}) and cardio (Beat Saber at MET ${cardioBlocks()[0]?.items[0]?.met ?? 6}). Food values come from product labels and USDA data and are estimates.`],
     ['Tab: Summary', 'Headline stats, averages, and each exercise\'s working weight, last reps, progression status and best weight.'],
     ['Tab: Daily', 'One row per day. Key columns: plan_day, status (done, missed, rest, off, today, extra = trained on a rest day), workout_completion_pct, kcal_in/kcal_out/net_kcal, macros, body_weight_lb, Apple Health activity (apple_active_kcal, steps, exercise_min, stand_hours, resting_hr_bpm, sleep_hours), missed_reason, pain_0_10 and recovery_* during time off.'],
-    ['Tab: Sets', 'One row per logged set and side (left, right or both). drop_set_to_failure applies only to the last set. completed = the set was checked off.'],
+    ['Tab: Sets', 'One row per logged set and side (left, right or both). est_1rm_lb is an estimated one-rep max (Epley: weight x (1 + reps/30)). drop_set_to_failure applies only to the last set. completed = the set was checked off.'],
+    ['Trend and targets', 'trend_weight_lb is a smoothed body weight (10% exponential moving average). Maintenance calories = average intake minus weight-trend change x 3,500 kcal per lb over the last 28 days. kcal_target = maintenance +/- 500 kcal per lb/week of the goal, lower on time-off days. water_cups are 8 oz cups.'],
     ['Tab: Food', 'One row per food eaten per day, with totals for the quantity eaten.'],
     ['Tab: Plans', 'The current workout plan and meal plan (per-unit nutrition).'],
   ];
@@ -2099,7 +2438,7 @@ function exportCandidates() {
     if (sh.food && !log['f:' + d] && (d < today || foodReadyToday)) {
       const { t, count } = nutrition(dayEntries(rec));
       if (count) {
-        out.food.push({ date: isoLocal(d < today ? at(d, 20) : Date.now()), kcal: Math.round(t.kcal), protein: Math.round(t.protein), carbs: Math.round(t.carbs), fat: Math.round(t.fat), fiber: Math.round(t.fiber), sugar: Math.round(t.sugar), sodium: Math.round(t.sodium), day: d });
+        out.food.push({ date: isoLocal(d < today ? at(d, 20) : Date.now()), water_oz: (+rec.water || 0) * 8, kcal: Math.round(t.kcal), protein: Math.round(t.protein), carbs: Math.round(t.carbs), fat: Math.round(t.fat), fiber: Math.round(t.fiber), sugar: Math.round(t.sugar), sodium: Math.round(t.sodium), day: d });
         keys.push('f:' + d);
       }
     }
@@ -2149,7 +2488,7 @@ function shareSection(url, key) {
           <li><b>Get Contents of URL</b>: <code>${esc(exportUrl)}</code> (method GET).</li>
           <li><b>Get Dictionary Value</b>: Value for <code>workouts</code> in Contents of URL. Then <b>Repeat with Each</b> item in it. Inside the repeat, add three <b>Get Dictionary Value</b> actions on Repeat Item for <code>start</code>, <code>minutes</code> and <code>kcal</code>, then <b>Log Workout</b>: type Traditional Strength Training, Start Date = start, Duration = minutes (min), Calories = kcal (kcal).</li>
           <li>Do the same for <code>cardio</code> with workout type Mixed Cardio.</li>
-          <li>Repeat over <code>food</code>. Inside, get <code>date</code>, then add <b>Log Health Sample</b> once per item: Dietary Energy = <code>kcal</code>, Protein = <code>protein</code> (g), Carbohydrates = <code>carbs</code> (g), Total Fat = <code>fat</code> (g), Fiber = <code>fiber</code> (g), Dietary Sugar = <code>sugar</code> (g), Sodium = <code>sodium</code> (mg), each with Date = date.</li>
+          <li>Repeat over <code>food</code>. Inside, get <code>date</code>, then add <b>Log Health Sample</b> once per item: Dietary Energy = <code>kcal</code>, Protein = <code>protein</code> (g), Carbohydrates = <code>carbs</code> (g), Total Fat = <code>fat</code> (g), Fiber = <code>fiber</code> (g), Dietary Sugar = <code>sugar</code> (g), Sodium = <code>sodium</code> (mg), Water = <code>water_oz</code> (fl oz), each with Date = date.</li>
           <li>Repeat over <code>weights</code>: <b>Log Health Sample</b> Weight = <code>lb</code> (lb), Date = <code>date</code>.</li>
           <li>Under <b>Automation</b>, run it every night (for example 10 PM) with <b>Run Immediately</b> on. Your phone needs to be on the same Wi-Fi as this PC, with the app open or in the tray.</li>
         </ol>
@@ -2247,6 +2586,8 @@ function migrate(d) {
   d.settings.sync = { ...base.settings.sync, ...(d.settings.sync || {}) };
   d.settings.goals = { ...base.settings.goals, ...(d.settings.goals || {}) };
   d.settings.share = { ...base.settings.share, ...(d.settings.share || {}) };
+  d.settings.goal = { ...base.settings.goal, ...(d.settings.goal || {}) };
+  d.swapFoods ||= structuredClone(DEFAULT_SWAPS);
   d.exportLog ||= {};
   d.settings.breaks ||= [];
   // One-time: time off the user asked for (Nov 13-26, 2026). Rename or change it in Settings.

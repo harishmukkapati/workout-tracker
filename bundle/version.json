@@ -1,6 +1,6 @@
 {
-  "version": "1.6.0",
+  "version": "1.7.0",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Cloud backup now also saves Workout Tracker Data.xlsx, a readable copy of your whole history."
+  "notes": "Goals, real maintenance calories, weight trend, estimated max, left vs right, weekly volume, nutrient trends, swaps, grocery list and water."
 }
