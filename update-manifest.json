@@ -1,10 +1,10 @@
 {
-  "version": "1.4.0",
+  "version": "1.4.1",
   "minShell": 1,
-  "ref": "80ecf3ae411d24ab9c1b5784b0acdc88dbaeafef",
-  "notes": "Pixel colors, planned time off, drop sets on the last set only, and sending workouts and food to Apple Health.",
+  "ref": "99c17629ce549d77418e6ea78f2cc84de6e0fdee",
+  "notes": "Drop sets now count toward your calorie estimate (about 4 kcal each).",
   "files": {
-    "app/app.js": "67511f905093bad1a0e3ce0c4da8303f106f899089b149771a0e279ace667ef1",
+    "app/app.js": "6fa5bba42fa5c31d2e184d123d47f3e57c863c3770ea4badc38c6594d194e46e",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
@@ -12,6 +12,6 @@
     "core.js": "d11f7d9801fa8fd6fca331b37afe67ef04cc5f88d7b536457557965265d4ec1d",
     "preload.js": "2419d8ae586861d9b1e3283c52beb3e2b490804897dd269a55e21e13e057a52a",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
-    "version.json": "40e4912ee4c6d266c62d35debb597f9971b039ecf446b41e95d71abaca798331"
+    "version.json": "668da92ebcbe993e25dcea6cdd4d1bc652d805ee9bb94fe1ecc6c32a583b2d3a"
   }
 }
