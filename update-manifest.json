@@ -1,0 +1,17 @@
+{
+  "version": "1.2.0",
+  "minShell": 1,
+  "ref": "v1.2.0",
+  "notes": "Self-updating app: new versions install themselves.",
+  "files": {
+    "app/app.js": "de4800213c1c12f7988f484e8b1734799ba038a30a7fe08d95a0b3e184635d61",
+    "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
+    "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
+    "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
+    "app/styles.css": "9178b24bc8d127cd8e5cda5155e5d69e1e786263235190aee7ae5cc1eabcbe3f",
+    "core.js": "b1938e7b7ee64fc910fc4a17a5ba9e39dd7b61f19c08dd4ef000493e1e783bb9",
+    "preload.js": "73027247a0675a977a9e379ece5e8aa444e8bdfd2fc3ac405991382508c9d132",
+    "src/importers.js": "c72dd73bf11cb4af0dd82dffd2dd10730f407066d3898c5a59bf84dd9ce68351",
+    "version.json": "12b4e0b202704d00ef3e18eb7fa9cf1dacf06899ea11a3ae5aaaca220a0d97cf"
+  }
+}

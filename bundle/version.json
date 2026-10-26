@@ -1,0 +1,6 @@
+{
+  "version": "1.2.0",
+  "minShell": 1,
+  "source": "",
+  "notes": "Self-updating app: new versions install themselves."
+}

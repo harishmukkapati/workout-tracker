@@ -1,0 +1,52 @@
+{
+  "name": "workout-tracker",
+  "productName": "Workout Tracker",
+  "version": "1.2.0",
+  "description": "Personal workout, food and consistency tracker",
+  "main": "shell/main.js",
+  "author": "Workout Tracker",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "yauzl": "^3.2.0"
+  },
+  "devDependencies": {
+    "electron": "38.8.6",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "local.workout.tracker",
+    "productName": "Workout Tracker",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "shell/**",
+      "bundle/**",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Workout Tracker",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "Workout-Tracker-Setup-${version}.${ext}"
+    },
+    "electronLanguages": [
+      "en-US"
+    ]
+  }
+}
