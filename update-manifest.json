@@ -1,7 +1,7 @@
 {
   "version": "1.2.0",
   "minShell": 1,
-  "ref": "v1.2.0",
+  "ref": "dd78a0a35b79383ed5bbaec9a292c96a55866971",
   "notes": "Self-updating app: new versions install themselves.",
   "files": {
     "app/app.js": "de4800213c1c12f7988f484e8b1734799ba038a30a7fe08d95a0b3e184635d61",

@@ -11,14 +11,17 @@ only on their PC (`%APPDATA%\Workout Tracker\data.json`); this repo holds code, 
 - `bundle/`: everything that self-updates. `core.js` (main process: window, storage, IPC, imports),
   `preload.js`, `src/importers.js`, `app/` (UI: index.html, app.js, styles.css, fonts).
 - `bundle/version.json`: bundle version, `minShell`, release notes.
-- `update-manifest.json`: what the installed app reads from `main` to find new versions.
+- `update-manifest.json`: what the installed app reads from `main` to find new versions. Its `ref` is the
+  commit the files are downloaded from, and each file has a SHA-256 the app checks.
 
 ## Shipping a change (the user just reopens the app)
 1. Edit files in `bundle/`. Test the UI in a browser: `bundle/app/index.html` runs without Electron
    (falls back to localStorage). Use `node -e "new Function(require('fs').readFileSync('bundle/app/app.js','utf8'))"` for a syntax check.
-2. `node tools/release.js <next version> "<one line the user will see>"`
-3. `git add -A && git commit -m "Release <version>" && git tag v<version> && git push origin main --tags`
-   The tag matters: the app downloads files from the tag, and the manifest from `main`.
+2. `node tools/release.js <next version> "<one line the user will see>"`, then
+   `git add -A && git commit -m "Release <version>"`
+3. `node tools/release.js --publish` (writes update-manifest.json pointing at that exact commit), then
+   `git add -A && git commit -m "Publish <version>" && git push origin main`.
+   No git tags: this environment can't push them, and the manifest's `ref` (a commit SHA) replaces them.
 4. Installed apps check about 8 seconds after opening and every 4 hours, then show "Restart to update".
 
 Rules for bundle code:
