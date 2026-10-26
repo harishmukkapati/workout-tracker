@@ -1,17 +1,17 @@
 {
-  "version": "1.5.0",
+  "version": "1.5.1",
   "minShell": 1,
-  "ref": "84db17e035fd42fa898affcf7e4d815cca79f0e3",
-  "notes": "Cloud backup, weight increase suggestions, and a recovery checklist for time off.",
+  "ref": "1147c1ecb4bb0c1fc3a446039e3fec1cad7fb1ef",
+  "notes": "Cloud backup now finds Google Drive.",
   "files": {
     "app/app.js": "128f679d1dcbec450d4a90102c134e43398cac1443800e36daa16b29281cfe73",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
     "app/styles.css": "0572d85a17b5edf944a3239ddd9801bdacecaf2d598edf56d7bddfa5575266bb",
-    "core.js": "9599f8b290ba5ae8e43971506052b560d652bdb1bf30535c68398c8030317d5e",
+    "core.js": "d718f2af6ce5b2e9b5ffeff6f65e30d9bfcd0fbe4c3a8b8782aac322e677b03e",
     "preload.js": "dd691e41eac9fe2a23d91c17a66f723e517aa6190b66a09439510e669fc25321",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
-    "version.json": "4cc4c6d636d70d0c88449ec828b1c9aea08db1e86b373de2bf865d50e0c09be9"
+    "version.json": "fb292ed50438e719ded8eb16138e51e95e4c7c21382b0d9ff72998defe654837"
   }
 }
