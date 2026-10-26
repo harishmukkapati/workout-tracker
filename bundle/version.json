@@ -1,6 +1,6 @@
 {
-  "version": "1.7.2",
+  "version": "1.8.0",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Chest and back is now two exercises: floor press and front raise."
+  "notes": "Ultrawide layout: more columns, an At a glance panel and extra stats on wide screens."
 }

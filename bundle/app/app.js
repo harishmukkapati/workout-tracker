@@ -611,6 +611,7 @@ function render() {
   v.scrollTop = scroll;
   if (ui.pop) { $(ui.pop)?.classList.add('pop'); ui.pop = null; }
   if (ui.view === 'progress') hydrateCharts();
+  if (ui.view === 'today') hydrateGlance();
   if (ui.view === 'nutrition') hydrateNutritionCharts();
   if (ui.view === 'settings' && window.api) {
     window.api.loginItem().then(on => { const t = $('#login-toggle'); if (t) t.checked = on; }).catch(() => {});
@@ -690,6 +691,11 @@ function viewToday() {
           <div class="sum-item"><b class="${cal.net == null ? '' : cal.net > 0 ? 'pos' : 'neg'}">${cal.net == null ? '–' : (cal.net > 0 ? '+' : '') + num(cal.net)}</b><small>net</small></div>
           <div class="sum-item"><b>${num(cal.protein)}<i>g</i></b><small>${tg?.protein ? `of ${tg.protein} g protein` : 'protein'}</small></div>
           <div class="sum-item"><b>${st.streak}</b><small>day streak</small></div>
+          ${(() => { const r = weeklyRate(), m = maintenance(), w = +data.days[date]?.water || 0; return `
+          <div class="sum-item wide-only t-water"><b>${w}<i>/${+data.settings.waterGoal || 8}</i></b><small>cups of water</small></div>
+          <div class="sum-item wide-only t-trend"><b>${r == null ? '–' : (r > 0 ? '+' : '') + r}</b><small>lb per week</small></div>
+          <div class="sum-item wide-only t-hit"><b>${st.rate30 == null ? '–' : Math.round(st.rate30 * 100) + '%'}</b><small>days hit, 30 days</small></div>
+          <div class="sum-item wide-only t-maint"><b>${m ? num(m.kcal) : '–'}</b><small>maintenance kcal</small></div>`; })()}
         </div>
       </div>
     </header>
@@ -699,16 +705,75 @@ function viewToday() {
       <section class="workout-col" aria-label="Workout">
         ${workoutSection(date, sc, rec, p, isFuture, isPast)}
       </section>
-      <aside class="fuel-col" aria-label="Food and calories">
+      <aside class="fuel-col" aria-label="Calories and body">
         ${activityCard(date)}
         ${caloriesCard(date, cal)}
         ${nutritionCard(date)}
         ${weightCard(date)}
         ${waterCard(date)}
+      </aside>
+      <aside class="meals-col" aria-label="Food">
         ${mealsCard(date)}
+      </aside>
+      <aside class="glance-col" aria-label="At a glance">
+        ${glanceCol(date)}
       </aside>
     </div>
   </div>`;
+}
+
+// ---------- At a glance (extra column on wide screens) ----------
+function glanceCol(date) {
+  const t = todayStr(), ws = weekStart(date), tg = targets(date);
+  // This week
+  const week = Array.from({ length: 7 }, (_, i) => {
+    const d = addDays(ws, i), sc = d < data.settings.startDate ? null : sched(d), rec = data.days[d];
+    const e = dayEntries(rec), kcal = e.length ? nutrition(e).t.kcal : 0, tk = targets(d)?.kcal;
+    return { d, sc, kcal, pct: tk ? Math.min(kcal / tk, 1.2) : 0, isToday: d === t, isSel: d === date };
+  });
+  const weekHtml = `<div class="wk">${week.map(w => `<button class="wk-day ${w.sc ? 'st-' + w.sc.status : 'st-before'} ${w.isToday ? 'is-today' : ''} ${w.isSel ? 'is-sel' : ''}" data-action="open-day" data-date="${w.d}" title="${esc(longDate(w.d))}">
+      <small>${parseDate(w.d).toLocaleDateString(undefined, { weekday: 'narrow' })}</small><span class="wk-dot"></span>
+      <span class="wk-bar"><i style="height:${Math.round(w.pct * 100)}%"></i></span></button>`).join('')}</div>`;
+  // Coming up
+  const next = Array.from({ length: 7 }, (_, i) => addDays(t, i + 1)).map(d => ({ d, sc: sched(d) }));
+  const nextBreak = (data.settings.breaks || []).filter(b => b.end >= t).sort((a, b) => a.start.localeCompare(b.start))[0];
+  const breakLine = nextBreak ? (nextBreak.start > t ? `${esc(nextBreak.label || 'Time off')} starts in ${diffDays(t, nextBreak.start)} days (${shortDate(nextBreak.start)}).` : `${esc(nextBreak.label || 'Time off')}: back on ${shortDate(addDays(nextBreak.end, 1))}.`) : '';
+  // Lifts
+  const ready = allExercises().map(e => ({ e, p: progression(e, addDays(t, 1)) })).filter(x => x.p && (x.p.kind === 'up' || x.p.kind === 'stuck'));
+  // Today's nutrition flags
+  const n = nutrition(dayEntries(data.days[date]));
+  const flags = n.count ? insights(n.t, n.top, date).list.filter(i => i.tone === 'over' || i.tone === 'low').slice(0, 3) : [];
+  const rate = weeklyRate();
+  return `
+    <section class="card glance-card">
+      <header class="card-head"><h2>This week</h2><span class="hint">Bars: calories vs target</span></header>
+      ${weekHtml}
+    </section>
+    <section class="card glance-card">
+      <header class="card-head"><h2>Coming up</h2></header>
+      <ul class="upcoming">${next.map(x => `<li class="st-${x.sc.status}"><span>${esc(longDate(x.d, { weekday: 'short', month: 'short', day: 'numeric' }))}</span><b>${esc(x.sc.kind === 'off' ? x.sc.label : x.sc.kind === 'rest' ? 'Rest' : 'Day ' + x.sc.day)}</b></li>`).join('')}</ul>
+      ${breakLine ? `<p class="hint">${breakLine}</p>` : ''}
+    </section>
+    <section class="card glance-card">
+      <header class="card-head"><h2>Body weight</h2>${rate == null ? '' : `<span class="delta ${rate < -0.05 ? 'down' : rate > 0.05 ? 'up' : ''}">${rate > 0 ? '+' : ''}${rate} lb/week</span>`}</header>
+      <div class="chart mini" data-chart="glance-weight"></div>
+    </section>
+    <section class="card glance-card">
+      <header class="card-head"><h2>Lifts</h2><button class="link-btn" data-nav="progress">All lifts</button></header>
+      ${ready.length ? `<ul class="glance-list">${ready.map(x => `<li><span>${esc(x.e.name)}</span>${x.p.kind === 'up' ? `<span class="prog-chip up">${x.p.to} lb</span>` : '<span class="prog-chip stuck">Stuck</span>'}</li>`).join('')}</ul>` : '<p class="hint">Nothing ready to go up yet. Hit the top of the rep range on every set to move up.</p>'}
+    </section>
+    ${flags.length ? `<section class="card glance-card"><header class="card-head"><h2>Food today</h2><button class="link-btn" data-nav="nutrition">Nutrition</button></header><ul class="insights">${flags.map(i => `<li class="${i.tone}">${esc(i.text.split('. ')[0])}.</li>`).join('')}</ul></section>` : ''}
+    ${tg?.kcal ? `<section class="card glance-card goal-mini"><small>Daily target</small><b>${num(tg.kcal)} kcal</b><span>${tg.protein ? `${tg.protein} g protein` : ''}</span></section>` : ''}`;
+}
+function hydrateGlance() {
+  const el = $('[data-chart="glance-weight"]');
+  if (!el || !el.offsetParent) return;
+  const from = addDays(todayStr(), -29), pts = [], tr = weightTrend().list.filter(p => p.x >= from);
+  for (let d = from; d <= todayStr(); d = addDays(d, 1)) { const w = weightOn(d); if (w) pts.push({ x: d, y: w }); }
+  drawChart(el, [
+    { name: 'Weigh-ins', color: 'color-mix(in srgb, var(--primary) 45%, transparent)', points: pts, dotsOnly: true },
+    { name: 'Trend', color: 'var(--primary)', points: pts.length > 1 ? tr : [], noDots: true },
+  ], { unit: 'lb', empty: 'Log your weight to see the trend.', height: 140, legend: false });
 }
 
 function nudge(date, sc, p) {
@@ -1204,11 +1269,11 @@ function viewCalendar() {
         ${weekdayPatterns()}
         ${recentMiss.length ? `<h3 class="sub-h">Recent misses</h3><ul class="miss-list">${recentMiss.map(d => { const r = reasonOf(data.days[d]?.miss?.reason); return `<li><button class="link-row" data-action="open-day" data-date="${d}"><span>${esc(longDate(d, { weekday: 'short', month: 'short', day: 'numeric' }))}</span><span class="reason-dot" style="--rc:${r?.color || 'var(--faint)'}">${r ? r.label : 'Add reason'}</span>${data.days[d]?.miss?.note ? `<small>${esc(data.days[d].miss.note)}</small>` : ''}</button></li>`; }).join('')}</ul>` : ''}
       </section>
+      <section class="card year-card">
+        <header class="card-head"><h2>Your year</h2><span class="hint">Each square is a day, Monday at the top</span></header>
+        ${yearGrid()}
+      </section>
     </div>
-    <section class="card year-card">
-      <header class="card-head"><h2>Your year</h2><span class="hint">Each square is a day, Monday at the top</span></header>
-      ${yearGrid()}
-    </section>
   </div>`;
 }
 
@@ -1327,11 +1392,11 @@ function hydrateCharts() {
   ], { unit: 'kcal', empty: 'Check off food on the Today page to start this chart.' });
 }
 
-function drawChart(el, series, { unit = '', empty = 'No data yet.' } = {}) {
+function drawChart(el, series, { unit = '', empty = 'No data yet.', height = 220, legend: showLegend = true } = {}) {
   if (!el) return;
   const all = series.flatMap(s => s.points);
   if (all.length < 1) { el.innerHTML = `<p class="empty-msg">${esc(empty)}</p>`; return; }
-  const W = Math.max(320, el.clientWidth || 600), H = 220, P = { l: 44, r: 14, t: 14, b: 26 };
+  const W = Math.max(280, el.clientWidth || 600), H = height, P = { l: 44, r: 14, t: 14, b: 26 };
   const xs = all.map(p => parseDate(p.x).getTime());
   let x0 = Math.min(...xs), x1 = Math.max(...xs);
   if (x0 === x1) { x0 -= 86400000 * 3; x1 += 86400000 * 3; }
@@ -1352,7 +1417,7 @@ function drawChart(el, series, { unit = '', empty = 'No data yet.' } = {}) {
     if (s.dotsOnly) return dots;
     return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.dash ? 1.5 : 2.25}" ${s.dash ? 'stroke-dasharray="5 4"' : ''} stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
   }).join('');
-  const legend = series.length > 1 ? `<div class="chart-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>` : '';
+  const legend = showLegend && series.length > 1 ? `<div class="chart-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>` : '';
   el.innerHTML = `${legend}<div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">${g}${paths}<line class="hover-line" y1="${P.t}" y2="${H - P.b}" x1="-10" x2="-10"/></svg><div class="tip"></div></div>`;
   const svg = $('svg', el), tip = $('.tip', el), line = $('.hover-line', el);
   svg.addEventListener('mousemove', (ev) => {
@@ -1538,7 +1603,7 @@ function viewNutrition() {
     ${goalsTop()}
     <div class="row-gap wrap range">${scopes.map(([v, l]) => `<button class="chip ${sc === v ? 'chip-on' : ''}" data-action="nut-scope" data-v="${v}">${l}</button>`).join('')}</div>
     <p class="hint scope-note">${esc(note)}</p>`;
-  const extras = goalsCard() + trendsCard() + groceryCard();
+  const extras = `<div class="nut-extras">${trendsCard()}${groceryCard()}</div>`;
   if (!count) return head + `<div class="card"><p class="empty-msg">Check off food on the Today page and it shows up here.</p></div>${extras}</div>`;
   const pk = t.protein * 4, ck = t.carbs * 4, fk = t.fat * 9, sum = pk + ck + fk || 1;
   const ins = insights(t, top, todayStr());
@@ -2154,6 +2219,15 @@ document.addEventListener('submit', (e) => {
   const fd = new FormData(f);
   getDay(ui.date).custom.push({ id: uid(), name: fd.get('name'), kcal: +fd.get('kcal') || 0, protein: +fd.get('protein') || 0, carbs: +fd.get('carbs') || 0, fat: +fd.get('fat') || 0 });
   save(); render();
+});
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (ui.view === 'progress') hydrateCharts();
+    if (ui.view === 'nutrition') hydrateNutritionCharts();
+    if (ui.view === 'today') hydrateGlance();
+  }, 200);
 });
 // Keyboard: arrow keys move across rep dots.
 document.addEventListener('keydown', (e) => {

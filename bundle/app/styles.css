@@ -822,3 +822,96 @@ b.pos { color: var(--pos); } b.neg { color: var(--neg); }
 .cup { width: 30px; height: 36px; }
 .cup svg { width: 24px; height: 24px; }
 .cal-r { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* ======================================================================
+   Layout by window width: standard, then wide (1900+) and ultrawide (2500+)
+   ====================================================================== */
+.cols { grid-template-areas: "work fuel" "work meals"; grid-template-rows: auto 1fr; }
+.workout-col { grid-area: work; min-width: 0; }
+.fuel-col { grid-area: fuel; }
+.meals-col { grid-area: meals; display: flex; flex-direction: column; gap: 16px; }
+.glance-col { grid-area: glance; display: none; }
+.wide-only { display: none !important; }
+.cal-layout .year-card { grid-column: 1 / -1; margin-top: 0; }
+.nut-extras { margin-top: 18px; display: flex; flex-direction: column; gap: 18px; }
+.nut-extras > .card { margin-top: 0; }
+
+@media (max-width: 1180px) {
+  .cols { grid-template-areas: "work" "fuel" "meals"; grid-template-rows: none; }
+}
+
+/* At a glance cards */
+.glance-card { background: var(--surface); }
+.wk { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.wk-day { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0 6px; border-radius: 14px; background: var(--surface-2); }
+.wk-day small { font-size: 12px; color: var(--muted); font-weight: 600; }
+.wk-day.is-today { outline: 2px solid var(--primary); }
+.wk-day.is-sel { background: var(--primary-c); }
+.wk-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--surface-3); }
+.wk-day.st-done .wk-dot, .wk-day.st-extra .wk-dot { background: var(--green); }
+.wk-day.st-missed .wk-dot { background: var(--red); }
+.wk-day.st-off .wk-dot { background: var(--hazel); }
+.wk-day.st-today .wk-dot { background: var(--blue); }
+.wk-day.st-planned .wk-dot { background: var(--blue-c); box-shadow: inset 0 0 0 2px var(--blue); }
+.wk-day.st-rest .wk-dot { background: transparent; box-shadow: inset 0 0 0 2px var(--faint); }
+.wk-bar { width: 10px; height: 46px; border-radius: 6px; background: var(--cyan-c); display: flex; align-items: flex-end; overflow: hidden; }
+.wk-bar i { display: block; width: 100%; background: var(--cyan); border-radius: 6px; }
+.upcoming { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.upcoming li { display: flex; justify-content: space-between; padding: 7px 12px; border-radius: 12px; background: var(--surface-2); font-size: 14px; }
+.upcoming li.st-planned b { color: var(--blue-ink); }
+.upcoming li.st-rest b { color: var(--muted); font-weight: 500; }
+.upcoming li.st-off { background: var(--hazel-c); color: var(--hazel-ink); }
+.glance-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.glance-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 14px; }
+.chart.mini { min-height: 140px; }
+.goal-mini { background: var(--cyan); color: #fff; display: flex; flex-direction: column; gap: 2px; }
+[data-theme="dark"] .goal-mini { color: #1a1640; }
+.goal-mini small { opacity: .85; }
+.goal-mini b { font-size: 30px; font-weight: 550; font-variation-settings: 'ROND' 100; }
+.sum-item.t-water { background: var(--blue-c); color: var(--blue-ink); }
+.sum-item.t-trend { background: var(--surface); }
+.sum-item.t-hit { background: var(--green-c); color: var(--green-ink); }
+.sum-item.t-maint { background: var(--cyan-c); color: var(--cyan-ink); }
+
+/* ---------- Wide: 1900px and up ---------- */
+@media (min-width: 1900px) {
+  main#view { padding-right: 44px; }
+  .wide-only { display: flex !important; }
+  .cols {
+    grid-template-columns: minmax(660px, 1040px) 380px minmax(360px, 1fr);
+    grid-template-areas: "work fuel glance" "work meals glance";
+  }
+  .glance-col { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; align-content: start; }
+  .page { max-width: 2600px; }
+  .prog-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .cal-layout { grid-template-columns: minmax(560px, 820px) minmax(340px, 460px) minmax(0, 1fr); }
+  .cal-layout .year-card { grid-column: auto; }
+  .year-grid { flex-wrap: nowrap; }
+  .nut-extras { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); align-items: start; }
+  .goals-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
+  .settings { column-count: 2; column-gap: 18px; }
+  .settings .page-head { column-span: all; }
+  .settings .card { break-inside: avoid; display: inline-block; width: 100%; }
+  .hist-row { grid-template-columns: 170px 90px 150px 190px 90px 1fr; }
+}
+
+/* ---------- Ultrawide: 2500px and up ---------- */
+@media (min-width: 2500px) {
+  .cols {
+    grid-template-columns: minmax(720px, 1060px) 380px 400px minmax(360px, 1fr);
+    grid-template-areas: "work fuel meals glance";
+    grid-template-rows: auto;
+  }
+  .prog-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .stat-row { grid-template-columns: repeat(4, minmax(0, 360px)); }
+  .nut-layout { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
+  .date-title { font-size: 64px; }
+}
+.glance-col { align-items: start; }
+.year-grid { overflow-x: auto; }
+.yg-col { flex: 1 1 0; min-width: 10px; max-width: 26px; }
+.yg { width: 100%; height: auto; aspect-ratio: 1; }
+@media (min-width: 2500px) {
+  .page { max-width: none; }
+  .stat-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
