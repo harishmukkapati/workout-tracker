@@ -1,17 +1,17 @@
 {
-  "version": "1.3.0",
+  "version": "1.4.0",
   "minShell": 1,
-  "ref": "56f836280b1949786ac421d599f778bf22fc1f82",
-  "notes": "Apple Health sync: activity rings, steps and weight update automatically. Set it up in Settings.",
+  "ref": "80ecf3ae411d24ab9c1b5784b0acdc88dbaeafef",
+  "notes": "Pixel colors, planned time off, drop sets on the last set only, and sending workouts and food to Apple Health.",
   "files": {
-    "app/app.js": "78e6b5db1e563e06ce905605e935af7b018af627f5357742d4b91db630eec9a7",
+    "app/app.js": "67511f905093bad1a0e3ce0c4da8303f106f899089b149771a0e279ace667ef1",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
-    "app/styles.css": "1cc7aa1606f54ea161292cf4287b684fac55cec19cf826f990eb99bfa9812b15",
-    "core.js": "8899d4857e309eae6b4e54ee96a6f89f6aaedfbc239cddd43f7e48524ee195a0",
-    "preload.js": "02af81eb0a30b82a22180674b5bcbd0e7d40fad32dbc719e6da07ab98b34aaf8",
+    "app/styles.css": "f970661f5c8ea47233a210c7141f9130f6357f992341d6966807670876ffca7e",
+    "core.js": "d11f7d9801fa8fd6fca331b37afe67ef04cc5f88d7b536457557965265d4ec1d",
+    "preload.js": "2419d8ae586861d9b1e3283c52beb3e2b490804897dd269a55e21e13e057a52a",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
-    "version.json": "a2d00d865dd5f2004048a0f0b5950ac5a04f7aa54464f86a0433e1a3fe69dc12"
+    "version.json": "40e4912ee4c6d266c62d35debb597f9971b039ecf446b41e95d71abaca798331"
   }
 }
