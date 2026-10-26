@@ -1,17 +1,17 @@
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "minShell": 1,
-  "ref": "dd78a0a35b79383ed5bbaec9a292c96a55866971",
-  "notes": "Self-updating app: new versions install themselves.",
+  "ref": "56f836280b1949786ac421d599f778bf22fc1f82",
+  "notes": "Apple Health sync: activity rings, steps and weight update automatically. Set it up in Settings.",
   "files": {
-    "app/app.js": "de4800213c1c12f7988f484e8b1734799ba038a30a7fe08d95a0b3e184635d61",
+    "app/app.js": "78e6b5db1e563e06ce905605e935af7b018af627f5357742d4b91db630eec9a7",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
-    "app/styles.css": "9178b24bc8d127cd8e5cda5155e5d69e1e786263235190aee7ae5cc1eabcbe3f",
-    "core.js": "b1938e7b7ee64fc910fc4a17a5ba9e39dd7b61f19c08dd4ef000493e1e783bb9",
-    "preload.js": "73027247a0675a977a9e379ece5e8aa444e8bdfd2fc3ac405991382508c9d132",
-    "src/importers.js": "c72dd73bf11cb4af0dd82dffd2dd10730f407066d3898c5a59bf84dd9ce68351",
-    "version.json": "12b4e0b202704d00ef3e18eb7fa9cf1dacf06899ea11a3ae5aaaca220a0d97cf"
+    "app/styles.css": "1cc7aa1606f54ea161292cf4287b684fac55cec19cf826f990eb99bfa9812b15",
+    "core.js": "8899d4857e309eae6b4e54ee96a6f89f6aaedfbc239cddd43f7e48524ee195a0",
+    "preload.js": "02af81eb0a30b82a22180674b5bcbd0e7d40fad32dbc719e6da07ab98b34aaf8",
+    "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
+    "version.json": "a2d00d865dd5f2004048a0f0b5950ac5a04f7aa54464f86a0433e1a3fe69dc12"
   }
 }
