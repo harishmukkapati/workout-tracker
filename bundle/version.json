@@ -1,6 +1,6 @@
 {
-  "version": "1.7.0",
+  "version": "1.7.1",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Goals, real maintenance calories, weight trend, estimated max, left vs right, weekly volume, nutrient trends, swaps, grocery list and water."
+  "notes": "Seated row replaced with a dumbbell pullover (25 lb to start)."
 }

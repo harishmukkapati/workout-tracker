@@ -1,7 +1,7 @@
 {
   "name": "workout-tracker",
   "productName": "Workout Tracker",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Personal workout, food and consistency tracker",
   "main": "shell/main.js",
   "author": "Workout Tracker",

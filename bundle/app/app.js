@@ -30,7 +30,7 @@ const DEFAULT_PROGRAM = {
     { id: 'b1', name: 'Chest and back', hue: 'b1', exercises: [
       ex('floor-press', 'One-arm dumbbell floor press', { repMin: 8, repMax: 12, wMin: 40, wMax: 45 }),
       ex('front-raise', 'Seated underhand front raise', { repMin: 12, repMax: 15, wMin: 15, wMax: 20 }),
-      ex('row', 'Seated chest-supported single-arm row', { repMin: 10, repMax: 12, wMin: 40, wMax: 50 }),
+      ex('pullover', 'Dumbbell pullover', { repMin: 10, repMax: 12, perSide: false, wMin: 25 }),
     ] },
     { id: 'b2', name: 'Shoulders', hue: 'b2', exercises: [
       ex('shoulder-press', 'Seated single-arm shoulder press', { repMin: 8, repMax: 12, wMin: 30, wMax: 35 }),
@@ -2190,7 +2190,8 @@ function workbookSheets() {
   const s = data.settings, today = todayStr(), sc = schedule(), st = stats();
   const allDates = [...new Set([...Object.keys(data.days), ...Object.keys(data.health), ...Object.keys(sc).filter(d => d <= today)])].filter(d => d <= today).sort();
   const exName = (id) => allExercises().find(e => e.id === id)?.name || id;
-  const blockOf = (id) => liftBlocks().find(b => b.exercises.some(e => e.id === id))?.name || '';
+  const retired = data.program.retired || [];
+  const blockOf = (id) => liftBlocks().find(b => b.exercises.some(e => e.id === id))?.name || (retired.find(e => e.id === id) ? `${retired.find(e => e.id === id).block || ''} (retired)` : '');
   const fmtRange = (a, b, u = '') => a == null ? '' : `${a}${b != null && b !== a ? '–' + b : ''}${u}`;
 
   // Daily
@@ -2215,7 +2216,7 @@ function workbookSheets() {
   const sets = [['date', 'plan_day', 'block', 'exercise', 'set', 'side', 'reps', 'weight_lb', 'est_1rm_lb', 'drop_set_to_failure', 'completed', 'target_reps', 'exercise_note']];
   for (const d of Object.keys(data.days).sort()) {
     const rec = data.days[d];
-    for (const e of allExercises()) {
+    for (const e of [...allExercises(), ...retired]) {
       const arr = rec.sets?.[e.id];
       if (!arr) continue;
       arr.forEach((row, i) => {
@@ -2595,6 +2596,16 @@ function migrate(d) {
   if (!d.settings.seeded.timeOff1) {
     if (!d.settings.breaks.some(b => b.start === '2026-11-13')) d.settings.breaks.push({ id: 'b-nov13', label: 'Time off', start: '2026-11-13', end: '2026-11-26' });
     d.settings.seeded.timeOff1 = true;
+  }
+  // One-time: swap the chest-supported row for a dumbbell pullover. Row history is kept under "retired".
+  if (!d.settings.seeded.pullover1) {
+    for (const b of d.program.blocks || []) {
+      const i = (b.exercises || []).findIndex(e => e.id === 'row');
+      if (i < 0) continue;
+      (d.program.retired ||= []).push({ ...b.exercises[i], block: b.name, retiredOn: todayStr() });
+      b.exercises[i] = { id: 'pullover', name: 'Dumbbell pullover', sets: 3, repMin: 10, repMax: 12, perSide: false, drop: true, wMin: 25, wMax: null };
+    }
+    d.settings.seeded.pullover1 = true;
   }
   // Fill nutrients into meal plans saved before nutrition tracking existed.
   for (const m of d.meals) for (const it of m.items) if (!it.n) it.n = { ...(NUT_BY_NAME[it.name.toLowerCase()]?.n || {}) };
