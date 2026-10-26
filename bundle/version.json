@@ -1,6 +1,6 @@
 {
-  "version": "1.7.1",
+  "version": "1.7.2",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Seated row replaced with a dumbbell pullover (25 lb to start)."
+  "notes": "Chest and back is now two exercises: floor press and front raise."
 }

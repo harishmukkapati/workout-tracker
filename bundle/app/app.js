@@ -30,7 +30,6 @@ const DEFAULT_PROGRAM = {
     { id: 'b1', name: 'Chest and back', hue: 'b1', exercises: [
       ex('floor-press', 'One-arm dumbbell floor press', { repMin: 8, repMax: 12, wMin: 40, wMax: 45 }),
       ex('front-raise', 'Seated underhand front raise', { repMin: 12, repMax: 15, wMin: 15, wMax: 20 }),
-      ex('pullover', 'Dumbbell pullover', { repMin: 10, repMax: 12, perSide: false, wMin: 25 }),
     ] },
     { id: 'b2', name: 'Shoulders', hue: 'b2', exercises: [
       ex('shoulder-press', 'Seated single-arm shoulder press', { repMin: 8, repMax: 12, wMin: 30, wMax: 35 }),
@@ -2606,6 +2605,17 @@ function migrate(d) {
       b.exercises[i] = { id: 'pullover', name: 'Dumbbell pullover', sets: 3, repMin: 10, repMax: 12, perSide: false, drop: true, wMin: 25, wMax: null };
     }
     d.settings.seeded.pullover1 = true;
+  }
+  // One-time: Block 1 drops its third exercise. Any logged history is kept under "retired".
+  if (!d.settings.seeded.noThirdChest1) {
+    for (const b of d.program.blocks || []) {
+      const i = (b.exercises || []).findIndex(e => e.id === 'pullover');
+      if (i < 0) continue;
+      const hasHistory = Object.values(d.days || {}).some(r => r.sets?.pullover);
+      if (hasHistory) (d.program.retired ||= []).push({ ...b.exercises[i], block: b.name, retiredOn: todayStr() });
+      b.exercises.splice(i, 1);
+    }
+    d.settings.seeded.noThirdChest1 = true;
   }
   // Fill nutrients into meal plans saved before nutrition tracking existed.
   for (const m of d.meals) for (const it of m.items) if (!it.n) it.n = { ...(NUT_BY_NAME[it.name.toLowerCase()]?.n || {}) };
