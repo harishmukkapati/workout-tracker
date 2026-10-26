@@ -46,14 +46,16 @@ The Today page shows what you've eaten so far. The Nutrition page shows your ful
 7- or 30-day average against the FDA daily values, with the biggest source of each nutrient and plain notes on
 what's high or low. Edit any food's numbers in Settings → Meal plan (click More for vitamins and minerals).
 
-## Fitness data (Apple Health / Google Fit)
+## Apple Health and Fitness (automatic)
 
-Neither service has a Windows API (and Google is shutting down the Google Fit API), so the app imports files:
+Settings → Apple Health and Fitness. Your iPhone sends Move, Exercise and Stand, steps, active and
+resting calories, weight, resting heart rate and sleep to the app automatically, two ways:
 
-- **iPhone:** Health app → your profile picture → Export All Health Data. Save the zip to iCloud Drive or OneDrive,
-  then Settings → Import Apple Health export. For hands-off daily syncing, use an app like Health Auto Export
-  to write a CSV to iCloud Drive on a schedule, and import that CSV once.
-- **Android / Google Fit:** takeout.google.com → select only Fit → import the zip.
-- **Any CSV** with a Date column plus active energy, resting energy, total calories, steps or weight.
+- **Wi-Fi sync:** turn it on to get an address and key. Health Auto Export (REST API automation) or an
+  Apple Shortcut posts to it. Instant, while the app is open and your phone is on the same Wi-Fi.
+- **iCloud Drive folder:** point the app at the folder your iPhone exports JSON into. Picks up files
+  even if the PC was off when the phone synced.
 
-Imported files are re-read automatically whenever they change. Imported calories replace the built-in estimate on the days they cover.
+Turn on "Keep syncing when the window is closed" to keep the app in the system tray. Step-by-step
+setup for both iPhone apps is in the app. Google Fit Takeout, full Apple Health exports and CSV/JSON
+files can still be imported by hand.
