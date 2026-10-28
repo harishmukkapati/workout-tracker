@@ -1,6 +1,6 @@
 {
-  "version": "1.9.2",
+  "version": "1.9.3",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Send the last 7 days again now works when you sync with another computer."
+  "notes": "Apple Health sends are confirmed only after they're saved, so nothing gets lost."
 }

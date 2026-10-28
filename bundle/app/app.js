@@ -2612,7 +2612,21 @@ function buildExport(mark) {
     refreshHealthCard();
     toast(`Sent ${count} item${count === 1 ? '' : 's'} to Apple Health`);
   }
-  return { ...out, count };
+  // The Shortcut sends this back once everything is in Health.
+  return { ...out, count, receipt: keys.join(',') };
+}
+function confirmExport(receipt) {
+  if (!data.settings.share?.enabled) return { error: 'Sending to Apple Health is turned off in Workout Tracker settings.' };
+  const keys = String(receipt).split(',').map(k => k.trim()).filter(k => /^(w|f|wt):\d{4}-\d\d-\d\d$|^c:\d{4}-\d\d-\d\d:[\w-]+$/.test(k));
+  if (!keys.length) return { ok: true, marked: 0 };
+  const now = Date.now();
+  data.exportLog ||= {};
+  for (const k of keys) data.exportLog[k] = now;
+  data.settings.lastExport = now;
+  save();
+  refreshHealthCard();
+  toast(`Saved ${keys.length} item${keys.length === 1 ? '' : 's'} to Apple Health`);
+  return { ok: true, marked: keys.length };
 }
 function pendingSummary() {
   const { out } = exportCandidates();
@@ -2635,14 +2649,15 @@ function shareSection(url, key) {
       <details class="howto"><summary>Set up the "Save to Apple Health" Shortcut</summary>
         <ol>
           <li>In <b>Shortcuts</b>, make a new shortcut named Save to Apple Health. (A ready-made one can be built with <code>tools/make-shortcut.py</code> in the app's GitHub repo, then signed on a Mac.)</li>
-          <li><b>Get Contents of URL</b>: <code>${esc(exportUrl)}</code> (method GET).</li>
+          <li><b>Get Contents of URL</b>: <code>${esc(exportUrl)}&amp;hold</code> (method GET).</li>
           <li><b>Get Dictionary Value</b>: Value for <code>workouts</code> in Contents of URL. Then <b>Repeat with Each</b> item in it. Inside the repeat, add three <b>Get Dictionary Value</b> actions on Repeat Item for <code>when</code>, <code>minutes</code> and <code>kcal</code>, then <b>Log Workout</b>: type Traditional Strength Training, Start Date = <code>when</code>, Duration = minutes (min), Calories = kcal (kcal).</li>
           <li>Do the same for <code>cardio</code> with workout type Mixed Cardio.</li>
           <li>Repeat over <code>food</code>. Inside, get <code>when</code>, then add <b>Log Health Sample</b> once per item: Dietary Energy = <code>kcal</code>, Protein = <code>protein</code> (g), Carbohydrates = <code>carbs</code> (g), Total Fat = <code>fat</code> (g), Fiber = <code>fiber</code> (g), Dietary Sugar = <code>sugar</code> (g), Sodium = <code>sodium</code> (mg), Water = <code>water_ml</code> (mL), each with Date = when.</li>
           <li>Repeat over <code>weights</code>: <b>Log Health Sample</b> Weight = <code>lb</code> (lb), Date = <code>when</code>.</li>
+          <li>Last, get <code>receipt</code> from Contents of URL and open <code>${esc(exportUrl)}&amp;done=</code> followed by it with <b>Get Contents of URL</b>. Items count as sent only after this step, so a run that fails partway leaves them waiting.</li>
           <li>Under <b>Automation</b>, run it every night (for example 10 PM) with <b>Run Immediately</b> on. Your phone needs to be on the same Wi-Fi as this PC, with the app open or in the tray.</li>
         </ol>
-        <p>Test without sending anything: open <code>${esc(exportUrl)}&peek</code> in Safari on your iPhone to see what's waiting.</p>
+        <p>To see what's waiting, open <code>${esc(exportUrl)}</code> in Safari on your iPhone. Opening it in a browser never marks anything as sent.</p>
       </details>` : ''}
   </div>`;
 }
@@ -2835,7 +2850,10 @@ const ICON = {
   }
   if (window.api?.sync) {
     window.api.sync.onPush(onHealthPush);
-    window.api.sync.onAsk(async (q) => { if (q.kind === 'export') return buildExport(!!q.arg?.mark); return { error: 'Unknown request' }; });
+    window.api.sync.onAsk(async (q) => {
+      if (q.kind === 'export') return typeof q.arg?.done === 'string' ? confirmExport(q.arg.done) : buildExport(!!q.arg?.mark);
+      return { error: 'Unknown request' };
+    });
     window.api.sync.onState(st => { ui.sync = st; refreshHealthCard(); });
     applySync();
     if (data.settings.watchDir) window.api.sync.watch(data.settings.watchDir);

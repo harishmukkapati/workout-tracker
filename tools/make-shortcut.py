@@ -8,9 +8,10 @@ iPhones only import signed shortcuts, so sign it on a Mac first:
 
     shortcuts sign --mode anyone --input out.shortcut --output "Save to Apple Health.shortcut"
 
-It reads /export from Workout Tracker (1.9.1 or newer, which adds `when` and `water_ml`) and logs:
+It reads /export?hold from Workout Tracker (1.9.3 or newer) and logs:
 workouts as Traditional Strength Training, Beat Saber as Mixed Cardio, each day's food as
-nutrition samples, and weigh-ins as body weight.
+nutrition samples, and weigh-ins as body weight. Only after everything is saved does it call
+/export?done=<receipt>, so a failed run leaves the items waiting for next time.
 """
 import plistlib
 import sys
@@ -76,10 +77,10 @@ def comment(text):
     add('comment', {'WFCommentActionText': text})
 
 
-# 1. Ask Workout Tracker what's new. Each item is handed out once, so running this twice won't double up.
+# 1. Ask Workout Tracker what's new. Nothing is marked sent until step 6 confirms.
 comment('Asks Workout Tracker on your PC or Mac for anything new. Your iPhone has to be on the same Wi-Fi, with the app open or in the tray.')
 fetch = (new_id(), 'Contents of URL')
-add('downloadurl', {'UUID': fetch[0], 'WFURL': url, 'WFHTTPMethod': 'GET'})
+add('downloadurl', {'UUID': fetch[0], 'WFURL': url + '&hold', 'WFHTTPMethod': 'GET'})
 fetched = attach(fetch)
 
 
@@ -153,7 +154,20 @@ def weight_body():
 
 repeat_each(weights, weight_body)
 
-# 5. Say how many were saved
+# 5. Everything is in Health: tell Workout Tracker, so these items aren't sent again.
+comment('Everything above saved, so tell Workout Tracker not to send these again. If a step fails, the shortcut stops here and the items stay waiting.')
+receipt = get_value(fetched, 'receipt', 'Receipt')
+prefix = url + '&done='
+add('downloadurl', {
+    'UUID': new_id(),
+    'WFHTTPMethod': 'GET',
+    'WFURL': {
+        'Value': {'string': prefix + '\ufffc', 'attachmentsByRange': {'{%d, 1}' % len(prefix): output_ref(receipt)}},
+        'WFSerializationType': 'WFTextTokenString',
+    },
+})
+
+# 6. Say how many were saved
 count = get_value(fetched, 'count', 'Count')
 add('notification', {
     'WFNotificationActionTitle': 'Workout Tracker',

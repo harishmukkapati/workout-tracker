@@ -377,7 +377,11 @@ exports.start = function start(ctx) {
       if (!keyOk(req, url)) return reply(res, 401, { ok: false, error: 'Wrong or missing key' });
       // Apple Health export: the iPhone Shortcut fetches what's new and logs it into Health.
       if (url.pathname === '/export') {
-        askPage('export', { mark: !url.searchParams.has('peek') })
+        // Opening the link in a browser only shows what's waiting. The Shortcut fetches with &hold,
+        // saves everything into Health, then calls &done=<receipt>, so nothing is marked sent until it's saved.
+        const browser = /^Mozilla\//.test(req.headers['user-agent'] || '');
+        const done = url.searchParams.get('done');
+        askPage('export', done !== null ? { done } : { mark: !browser && !url.searchParams.has('peek') && !url.searchParams.has('hold') })
           .then((out) => {
             if (out?.error) return reply(res, 403, { ok: false, error: out.error });
             serverState = { ...serverState, lastExportAt: Date.now(), lastExportCount: out.count };
