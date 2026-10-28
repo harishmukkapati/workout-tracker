@@ -1,18 +1,18 @@
 {
-  "version": "1.8.0",
+  "version": "1.9.0",
   "minShell": 1,
-  "ref": "e17cb9d07087e69ea165962e5d88881e155d6a02",
-  "notes": "Ultrawide layout: more columns, an At a glance panel and extra stats on wide screens.",
+  "ref": "9449d1966ab75c9048a4b82bd1663b5d8620000d",
+  "notes": "Sync between your computers through Google Drive, and Mac support.",
   "files": {
-    "app/app.js": "e8a350ba4d34dd7c616f0185d1c7f4f666f3a2206e4d00fbd282c1f9523fe37f",
+    "app/app.js": "dc14e9cab57d8487c04cf7da5fd89dff89c76e34e30b36c0965d12f2b055ac47",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
-    "app/styles.css": "f2590a864670968c3e64cb8f854e5d37dd415bebfd8f0459ccdce66cc5793aeb",
-    "core.js": "0c97b6329c0920c050df99c4313988b16caeeb36a7c0e7677f9cf39788c56d47",
-    "preload.js": "d8e9765a90e6e3c24854e3206de75bd08ae03940c6164f6d249a7eb7d1a1caae",
+    "app/styles.css": "72a4998b6c41734877957f1c8bfcd438bf80cd93c0ba7a0428a5c40cb58d71bb",
+    "core.js": "07c5ffede66922a9ad50e5727fb8d9faf600bcc9c0f4e6d744b3a2f736880ce1",
+    "preload.js": "51ae11f50044ce4da15a76d922c0ad21dd162f61b581b9f17c161d543ec86933",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
     "src/xlsx.js": "0ca61e04aeed2908196e8b0c9f057de8087b2ca6c56d943e0db09b77b2458fb1",
-    "version.json": "486600133bfaf2f0971875a9fb7b2f108539cc0965c9cdf79d4c22224683ea68"
+    "version.json": "0068d19f35c8e98a356f46045f57f9bb8c884f9f4964049321d3283942a24b2f"
   }
 }
