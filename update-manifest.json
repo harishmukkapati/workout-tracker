@@ -1,10 +1,10 @@
 {
-  "version": "1.9.0",
+  "version": "1.9.1",
   "minShell": 1,
-  "ref": "9449d1966ab75c9048a4b82bd1663b5d8620000d",
-  "notes": "Sync between your computers through Google Drive, and Mac support.",
+  "ref": "2c24b18db4056df569a0d236961cb2e372181089",
+  "notes": "Ready-made Apple Health Shortcut support, and the Wi-Fi status now updates right away.",
   "files": {
-    "app/app.js": "dc14e9cab57d8487c04cf7da5fd89dff89c76e34e30b36c0965d12f2b055ac47",
+    "app/app.js": "427f838c7438ad9085d616ac1da4caf5a5196209959c8f28024e644d56d25a01",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
@@ -13,6 +13,6 @@
     "preload.js": "51ae11f50044ce4da15a76d922c0ad21dd162f61b581b9f17c161d543ec86933",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
     "src/xlsx.js": "0ca61e04aeed2908196e8b0c9f057de8087b2ca6c56d943e0db09b77b2458fb1",
-    "version.json": "0068d19f35c8e98a356f46045f57f9bb8c884f9f4964049321d3283942a24b2f"
+    "version.json": "c5138bc0c6cf81f954fdde8194c2d9595727cfbda2bf0c43af37a7f730de1f7a"
   }
 }
