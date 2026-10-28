@@ -1,6 +1,6 @@
 {
-  "version": "1.9.1",
+  "version": "1.9.2",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Ready-made Apple Health Shortcut support, and the Wi-Fi status now updates right away."
+  "notes": "Send the last 7 days again now works when you sync with another computer."
 }

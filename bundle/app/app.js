@@ -2079,6 +2079,7 @@ document.addEventListener('click', async (e) => {
     case 'resend-week': {
       const from = addDays(todayStr(), -6);
       for (const k of Object.keys(data.exportLog || {})) { const d = k.split(':')[1]; if (d >= from) delete data.exportLog[k]; }
+      data.settings.exportReset = { from, at: Date.now() };
       save(); refreshHealthCard(); toast('The last 7 days will be sent again on the next sync'); return;
     }
     case 'new-key': data.settings.sync.key = newKey(); save(); applySync(); toast('New key made. Update it on your iPhone.'); return;
@@ -2549,6 +2550,9 @@ const sameDay = (ms, date) => ms && fmtDate(new Date(ms)) === date;
 // Everything not yet sent, from the last 30 days.
 function exportCandidates() {
   const sh = data.settings.share, log = (data.exportLog ||= {}), today = todayStr(), out = { workouts: [], cardio: [], food: [], weights: [] }, keys = [];
+  // "Send again" is a synced setting, so another computer's older sent-list can't undo it.
+  const again = data.settings.exportReset;
+  const sent = (k, d) => !!log[k] && !(again && d >= again.from && log[k] < again.at);
   const now = new Date(), [fh, fm] = (sh.foodAfter || '21:00').split(':').map(Number);
   const foodReadyToday = now.getHours() * 60 + now.getMinutes() >= fh * 60 + fm;
   let from = addDays(today, -29); if (from < data.settings.startDate) from = data.settings.startDate;
@@ -2566,7 +2570,7 @@ function exportCandidates() {
       const energy = liftEnergy(rec, d, measured);
       const minutes = Math.round(Math.max(10, energy.minutes));
       liftEnd = start + minutes * 60000;
-      if (sh.workouts && finished && !log['w:' + d]) {
+      if (sh.workouts && finished && !sent('w:' + d, d)) {
         out.workouts.push({ start: isoLocal(start), when: whenText(start), minutes, kcal: sh.calories ? Math.round(energy.kcal) : 0, day: d });
         keys.push('w:' + d);
       }
@@ -2574,12 +2578,12 @@ function exportCandidates() {
     // Cardio (Beat Saber), right after lifting
     for (const b of cardioBlocks()) for (const it of b.items) {
       const c = rec.cardio?.[it.id], k = `c:${d}:${it.id}`;
-      if (!sh.cardio || !c?.done || !(+c.min > 0) || !finished || log[k]) continue;
+      if (!sh.cardio || !c?.done || !(+c.min > 0) || !finished || sent(k, d)) continue;
       out.cardio.push({ name: it.name, start: isoLocal(liftEnd), when: whenText(liftEnd), minutes: +c.min, kcal: sh.calories ? Math.round(+c.min * kcalPerMin(it.met || 6, d)) : 0, day: d });
       keys.push(k);
     }
     // Food: complete days, plus today after the cutoff time
-    if (sh.food && !log['f:' + d] && (d < today || foodReadyToday)) {
+    if (sh.food && !sent('f:' + d, d) && (d < today || foodReadyToday)) {
       const { t, count } = nutrition(dayEntries(rec));
       if (count) {
         const fAt = d < today ? at(d, 20) : Date.now();
@@ -2588,7 +2592,7 @@ function exportCandidates() {
       }
     }
     // Weigh-ins you typed (skip ones that came from Apple Health in the first place)
-    if (sh.weight && rec.weight && !log['wt:' + d] && data.health[d]?.weightLb !== rec.weight) {
+    if (sh.weight && rec.weight && !sent('wt:' + d, d) && data.health[d]?.weightLb !== rec.weight) {
       const wAt = sameDay(rec.weightAt, d) ? rec.weightAt : at(d, 7);
       out.weights.push({ date: isoLocal(wAt), when: whenText(wAt), lb: rec.weight, day: d });
       keys.push('wt:' + d);
