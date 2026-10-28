@@ -1,18 +1,18 @@
 {
-  "version": "1.9.2",
+  "version": "1.9.3",
   "minShell": 1,
-  "ref": "d31184f63156c0d6d2c9b723ba31f71167640b65",
-  "notes": "Send the last 7 days again now works when you sync with another computer.",
+  "ref": "2a76c4201b64174123982b87883c9b17ed0de3d0",
+  "notes": "Apple Health sends are confirmed only after they're saved, so nothing gets lost.",
   "files": {
-    "app/app.js": "977f22ef057c14f1b4ae07d421d6fb181e61997eb4df0d835fe99ebd9a2e3c9b",
+    "app/app.js": "679be1a205de113bb860aa13503b4348f1391936591b4f9e043cb7f4631a9723",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
     "app/styles.css": "72a4998b6c41734877957f1c8bfcd438bf80cd93c0ba7a0428a5c40cb58d71bb",
-    "core.js": "07c5ffede66922a9ad50e5727fb8d9faf600bcc9c0f4e6d744b3a2f736880ce1",
+    "core.js": "8b9a85296428e3d077ada477bfc9001902d99647c3722fa4d9dadeabd4d9d060",
     "preload.js": "51ae11f50044ce4da15a76d922c0ad21dd162f61b581b9f17c161d543ec86933",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
     "src/xlsx.js": "0ca61e04aeed2908196e8b0c9f057de8087b2ca6c56d943e0db09b77b2458fb1",
-    "version.json": "492119dd7e2151cb17a59e5495ded32cc805d27a4e9eff49d91d0d2294cf7550"
+    "version.json": "d733ec5f6ff88915c43020b0f77ba72eba1248b33649da0d33d5710a585f88d3"
   }
 }
