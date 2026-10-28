@@ -915,3 +915,16 @@ b.pos { color: var(--pos); } b.neg { color: var(--neg); }
   .page { max-width: none; }
   .stat-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+
+/* ---------- macOS window chrome ---------- */
+.platform-darwin .nav { padding-top: 50px; }
+.platform-darwin .titlebar { height: 44px; }
+
+/* ---------- Sync between computers ---------- */
+.sync-box { margin-top: 16px; background: var(--surface-2); border-radius: 20px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.sync-box .sub-h { margin: 0; }
+.devices { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.devices li { display: grid; grid-template-columns: minmax(140px, auto) 1fr auto; gap: 12px; align-items: center; background: var(--surface); border-radius: 14px; padding: 9px 14px; font-size: 14px; }
+.devices li span { color: var(--muted); }
+.devices li small { color: var(--muted); }
+.devices li.me { box-shadow: inset 0 0 0 2px var(--primary-c); }

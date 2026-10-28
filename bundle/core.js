@@ -1,7 +1,10 @@
 // Workout Tracker core: windows, storage, imports. Loaded by the launcher (shell/main.js),
 // either from the copy shipped with the app or from a downloaded update.
 // All data lives in %APPDATA%\Workout Tracker. Nothing leaves your PC except update checks.
-const { app, BrowserWindow, dialog, shell, Notification, nativeTheme } = require('electron');
+const { app, BrowserWindow, dialog, shell, Notification, nativeTheme, Menu } = require('electron');
+const os = require('os');
+const isMac = process.platform === 'darwin';
+const localDate = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const path = require('path');
 const fs = require('fs');
 const importers = require('./src/importers');
@@ -22,8 +25,10 @@ exports.start = function start(ctx) {
       backgroundColor: '#F0F4F9',
       title: 'Workout Tracker',
       icon: ctx.iconPath,
-      titleBarStyle: 'hidden',
-      titleBarOverlay: { color: '#00000000', symbolColor: '#5F6368', height: 36 },
+      // macOS keeps its traffic-light buttons, tucked into the top of the nav rail; Windows draws its own controls.
+      ...(isMac
+        ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 20, y: 18 } }
+        : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#00000000', symbolColor: '#5F6368', height: 36 } }),
       show: false,
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
@@ -33,7 +38,7 @@ exports.start = function start(ctx) {
         spellcheck: true,
       },
     });
-    win.removeMenu();
+    if (!isMac) win.removeMenu();
     win.once('ready-to-show', () => win.show());
     win.loadFile(path.join(__dirname, 'app', 'index.html'));
     // Open external links in the default browser, never inside the app.
@@ -43,7 +48,17 @@ exports.start = function start(ctx) {
     ctx.onWindow?.(win);
   }
 
-  app.whenReady().then(createWindow);
+  app.whenReady().then(() => {
+    // macOS needs an app menu for copy, paste, undo and quit shortcuts to work.
+    if (isMac) Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { role: 'appMenu' }, { role: 'editMenu' },
+      { label: 'View', submenu: [{ role: 'reload' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' }] },
+      { role: 'windowMenu' },
+    ]));
+    createWindow();
+  });
+  // macOS: clicking the Dock icon brings the window back.
+  app.on('activate', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } else createWindow(); });
   app.on('window-all-closed', () => app.quit());
 
   // ---------- storage ----------
@@ -69,7 +84,7 @@ exports.start = function start(ctx) {
     // One backup per day, keep the last 30.
     try {
       fs.mkdirSync(backupDir(), { recursive: true });
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localDate();
       fs.writeFileSync(path.join(backupDir(), `data-${today}.json`), json);
       const files = fs.readdirSync(backupDir()).filter(f => f.endsWith('.json')).sort();
       while (files.length > 30) fs.unlinkSync(path.join(backupDir(), files.shift()));
@@ -79,36 +94,102 @@ exports.start = function start(ctx) {
     return true;
   });
 
-  // ---------- cloud backup (OneDrive / iCloud Drive folder) ----------
-  // Writes "Workout Tracker Backups/latest.json" plus one file per day (last 60 kept).
-  // Throttled to every 10 minutes while you use the app, and once more when it quits.
-  let lastJson = null, cloudDir = null, cloudAt = 0;
+  // ---------- cloud backup + sync between computers (Google Drive / OneDrive / iCloud Drive folder) ----------
+  // Layout inside "<cloud folder>/Workout Tracker Backups":
+  //   devices/<computer name>/latest.json and data-YYYY-MM-DD.json   backups, one folder per computer (last 60 days)
+  //   sync/<device id>.json                                          each computer's current data, for the others to merge
+  //   Workout Tracker Data.xlsx                                       readable copy (written by the computer with the newest changes)
+  // Each computer only writes its own files, so cloud sync never has two writers on one file.
+  let lastJson = null, cloudDir = null, cloudAt = 0, syncAt = 0, syncHash = '';
   let cloudState = { dir: null, lastAt: null, error: null };
   const cloudFolder = () => path.join(cloudDir, 'Workout Tracker Backups');
+  const safeName = (n) => String(n || 'This computer').replace(/[\\/:*?"<>|]/g, ' ').trim().slice(0, 60) || 'This computer';
+  // Settings that belong to one computer (folder paths, Wi-Fi sync, tray) are never shared.
+  const LOCAL_KEYS = ['backupDir', 'watchDir', 'healthSources', 'sync', 'background', 'lastNotified', 'lastVersion', 'backupNudgeOff', 'lastHealthSync', 'deviceId', 'deviceName'];
+  function syncPayload(json) {
+    const d = JSON.parse(json);
+    const settings = { ...(d.settings || {}) };
+    for (const k of LOCAL_KEYS) delete settings[k];
+    const t = d.meta?.t || {};
+    return { deviceId: d.settings?.deviceId, deviceName: d.settings?.deviceName, platform: process.platform, version: ctx.version, writtenAt: Date.now(), lastChange: Math.max(0, ...Object.values(t)), data: { ...d, settings } };
+  }
   function cloudBackup(force) {
     if (!cloudDir || !lastJson) return;
-    if (!force && Date.now() - cloudAt < 10 * 60 * 1000) return;
+    let id = null, name = null;
+    try { const st = JSON.parse(lastJson).settings || {}; id = st.deviceId; name = st.deviceName; } catch {}
     try {
-      fs.mkdirSync(cloudFolder(), { recursive: true });
-      const today = new Date().toISOString().slice(0, 10);
-      fs.writeFileSync(path.join(cloudFolder(), 'latest.json.tmp'), lastJson);
-      fs.renameSync(path.join(cloudFolder(), 'latest.json.tmp'), path.join(cloudFolder(), 'latest.json'));
-      fs.writeFileSync(path.join(cloudFolder(), `data-${today}.json`), lastJson);
-      const files = fs.readdirSync(cloudFolder()).filter(f => /^data-\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort();
-      while (files.length > 60) fs.unlinkSync(path.join(cloudFolder(), files.shift()));
-      cloudAt = Date.now();
-      cloudState = { dir: cloudDir, lastAt: cloudAt, error: null };
+      // Sync file: at most every 30 seconds, and only when something changed.
+      const hash = require('crypto').createHash('sha1').update(lastJson).digest('hex');
+      if (id && hash !== syncHash && (force || Date.now() - syncAt > 30 * 1000)) {
+        fs.mkdirSync(path.join(cloudFolder(), 'sync'), { recursive: true });
+        const f = path.join(cloudFolder(), 'sync', `${id}.json`);
+        fs.writeFileSync(f + '.tmp', JSON.stringify(syncPayload(lastJson)));
+        fs.renameSync(f + '.tmp', f);
+        syncAt = Date.now(); syncHash = hash;
+        cloudState = { ...cloudState, syncAt };
+      }
+      // Backups: every 10 minutes.
+      if (force || Date.now() - cloudAt >= 10 * 60 * 1000) {
+        const dir = path.join(cloudFolder(), 'devices', safeName(name));
+        fs.mkdirSync(dir, { recursive: true });
+        const today = localDate();
+        fs.writeFileSync(path.join(dir, 'latest.json.tmp'), lastJson);
+        fs.renameSync(path.join(dir, 'latest.json.tmp'), path.join(dir, 'latest.json'));
+        fs.writeFileSync(path.join(dir, `data-${today}.json`), lastJson);
+        const files = fs.readdirSync(dir).filter(f => /^data-\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort();
+        while (files.length > 60) fs.unlinkSync(path.join(dir, files.shift()));
+        cloudAt = Date.now();
+        cloudState = { ...cloudState, dir: cloudDir, lastAt: cloudAt, error: null };
+      }
     } catch (err) {
-      cloudState = { dir: cloudDir, lastAt: cloudState.lastAt, error: err.message };
+      cloudState = { ...cloudState, dir: cloudDir, error: err.message };
     }
     if (win && !win.isDestroyed()) win.webContents.send('backup:state', cloudState);
   }
   app.on('before-quit', () => cloudBackup(true));
+  setInterval(() => cloudBackup(false), 30 * 1000);
+
+  // Read the other computers' sync files and hand anything new to the page to merge.
+  const seenFile = () => path.join(dataDir(), 'sync-seen.json');
+  let syncSeen = readJSON(seenFile()) || {};
+  let devices = [];
+  function pullRemote(force) {
+    if (!cloudDir || !pageReady || !win || win.isDestroyed()) return devices;
+    let myId = null;
+    try { myId = JSON.parse(lastJson || fs.readFileSync(dataFile(), 'utf8')).settings?.deviceId; } catch {}
+    const dir = path.join(cloudFolder(), 'sync');
+    let files = [];
+    try { files = fs.readdirSync(dir).filter(f => f.endsWith('.json') && f !== `${myId}.json`); } catch { return devices; }
+    const list = [];
+    for (const f of files) {
+      try {
+        const full = path.join(dir, f), mtime = fs.statSync(full).mtimeMs;
+        const p = JSON.parse(fs.readFileSync(full, 'utf8'));
+        if (!p?.deviceId || p.deviceId === myId || !p.data) continue;
+        list.push({ deviceId: p.deviceId, deviceName: p.deviceName, platform: p.platform, version: p.version, writtenAt: p.writtenAt, lastChange: p.lastChange });
+        if (force || (syncSeen[p.deviceId] || 0) < p.writtenAt) {
+          win.webContents.send('sync:remote', p);
+          syncSeen[p.deviceId] = p.writtenAt;
+          try { fs.writeFileSync(seenFile(), JSON.stringify(syncSeen)); } catch {}
+        }
+        void mtime;
+      } catch { /* the cloud app may still be writing the file; try again next time */ }
+    }
+    devices = list;
+    win.webContents.send('sync:devices', devices);
+    return devices;
+  }
+  setInterval(() => pullRemote(false), 45 * 1000);
+  app.on('browser-window-focus', () => pullRemote(false));
+  handle('sync:pull', () => pullRemote(true));
+  handle('sync:devices', () => devices);
+
   handle('backup:configure', (_e, dir) => {
     cloudDir = dir && fs.existsSync(dir) ? dir : null;
     cloudState = { dir: cloudDir, lastAt: null, error: dir && !cloudDir ? 'That folder no longer exists.' : null };
     if (!lastJson) { try { lastJson = fs.readFileSync(dataFile(), 'utf8'); } catch {} }
     cloudBackup(true);
+    setTimeout(() => pullRemote(false), 1500);
     return cloudState;
   });
   handle('backup:now', () => { cloudBackup(true); return cloudState; });
@@ -138,6 +219,18 @@ exports.start = function start(ctx) {
     // Google Drive for desktop shows up as its own drive letter ("G:\My Drive") or, in mirror mode, a folder.
     if (process.platform === 'win32') for (const L of 'GHIJKLMNOPQRSTUVWXYZDEF') c.push(['Google Drive', `${L}:\\My Drive`]);
     for (const dir of [path.join(home, 'My Drive'), path.join(home, 'Google Drive', 'My Drive'), path.join(home, 'Google Drive')]) c.push(['Google Drive', dir]);
+    if (isMac) {
+      // Google Drive for desktop on macOS: ~/Library/CloudStorage/GoogleDrive-<account>/My Drive
+      const cs = path.join(home, 'Library', 'CloudStorage');
+      let entries = []; try { entries = fs.readdirSync(cs); } catch {}
+      for (const e of entries) {
+        if (/^GoogleDrive-/i.test(e)) c.unshift(['Google Drive', path.join(cs, e, 'My Drive')]);
+        else if (/^OneDrive/i.test(e)) c.push(['OneDrive', path.join(cs, e)]);
+        else if (/^Dropbox/i.test(e)) c.push(['Dropbox', path.join(cs, e)]);
+      }
+      c.push(['Google Drive', '/Volumes/GoogleDrive/My Drive']);
+      c.push(['iCloud Drive', path.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs')]);
+    }
     const seen = new Set(), out = [];
     for (const [name, dir] of c) { if (dir && !seen.has(name) && fs.existsSync(dir)) { seen.add(name); out.push({ name, dir }); } }
     return out;
@@ -150,7 +243,7 @@ exports.start = function start(ctx) {
   handle('data:export', async (_e, data) => {
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
       title: 'Export backup',
-      defaultPath: `workout-tracker-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      defaultPath: `workout-tracker-backup-${localDate()}.json`,
       filters: [{ name: 'JSON', extensions: ['json'] }],
     });
     if (canceled || !filePath) return false;
@@ -222,7 +315,7 @@ exports.start = function start(ctx) {
     return true;
   });
 
-  handle('sys:info', () => ({ dataDir: dataDir(), version: ctx.version, shellVersion: ctx.shellVersion }));
+  handle('sys:info', () => ({ dataDir: dataDir(), version: ctx.version, shellVersion: ctx.shellVersion, platform: process.platform, hostname: process.env.WT_DEVICE_NAME || os.hostname().replace(/\.local$/, '') }));
 
   // ======================================================================
   // Apple Health live sync

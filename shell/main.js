@@ -11,7 +11,7 @@ global.shellRequire = require; // lets updated code load modules shipped with th
 
 const SHELL_VERSION = 1;
 const APP_ID = 'local.workout.tracker';
-const DEFAULT_SOURCE = ''; // "owner/repo" on GitHub; can also be set in Settings
+const DEFAULT_SOURCE = 'harishmukkapati/workout-tracker'; // "owner/repo" on GitHub; can also be set in Settings
 const RAW = process.env.WT_UPDATE_BASE || 'https://raw.githubusercontent.com';
 const BUNDLED_DIR = path.join(__dirname, '..', 'bundle');
 const ICON = path.join(__dirname, '..', 'build', 'icon.png');

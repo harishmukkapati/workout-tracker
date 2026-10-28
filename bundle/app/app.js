@@ -170,6 +170,7 @@ function defaultData() {
     days: {},
     health: {},
     swapFoods: structuredClone(DEFAULT_SWAPS),
+    meta: { t: {} },
   };
 }
 
@@ -192,9 +193,57 @@ function save() {
   memo.clear();
   workbookDirty = true;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => store.save(data), 300);
+  saveTimer = setTimeout(() => { stampChanges(); store.save(data); }, 300);
 }
-window.addEventListener('beforeunload', () => { clearTimeout(saveTimer); store.save(data); });
+
+// ======================================================================
+// Sync between computers (through the cloud backup folder)
+// Every day, health day, setting and plan carries a "last changed" time in data.meta.t.
+// When another computer's file arrives, the newer version of each piece wins.
+// ======================================================================
+const LOCAL_KEYS = ['backupDir', 'watchDir', 'healthSources', 'sync', 'background', 'lastNotified', 'lastVersion', 'backupNudgeOff', 'lastHealthSync', 'deviceId', 'deviceName'];
+const isMacApp = () => window.api?.platform === 'darwin';
+function syncPieces() {
+  const out = { program: data.program, meals: data.meals, swapFoods: data.swapFoods || [] };
+  for (const [k, v] of Object.entries(data.settings)) if (!LOCAL_KEYS.includes(k)) out['set:' + k] = v;
+  for (const [d, r] of Object.entries(data.days)) out['day:' + d] = r;
+  for (const [d, h] of Object.entries(data.health)) out['health:' + d] = h;
+  return out;
+}
+let snapshot = new Map();
+function takeSnapshot() { snapshot = new Map(Object.entries(syncPieces()).map(([k, v]) => [k, JSON.stringify(v)])); }
+function stampChanges() {
+  if (!data) return;
+  const t = ((data.meta ||= {}).t ||= {}), now = Date.now();
+  for (const [k, v] of Object.entries(syncPieces())) {
+    const j = JSON.stringify(v);
+    if (snapshot.get(k) !== j) { t[k] = now; snapshot.set(k, j); }
+  }
+}
+function mergeRemote(p) {
+  if (!p?.data || !p.deviceId || p.deviceId === data.settings.deviceId) return 0;
+  stampChanges(); // stamp anything edited here first, so it isn't overwritten by older remote data
+  const rt = p.data.meta?.t || {}, lt = ((data.meta ||= {}).t ||= {});
+  const newer = (k) => (rt[k] || 0) > (lt[k] || 0);
+  let n = 0, days = 0;
+  for (const [d, r] of Object.entries(p.data.days || {})) if (newer('day:' + d)) { data.days[d] = r; lt['day:' + d] = rt['day:' + d]; n++; days++; }
+  for (const [d, h] of Object.entries(p.data.health || {})) if (newer('health:' + d)) { data.health[d] = h; lt['health:' + d] = rt['health:' + d]; n++; }
+  for (const [k, v] of Object.entries(p.data.settings || {})) if (!LOCAL_KEYS.includes(k) && newer('set:' + k)) { data.settings[k] = v; lt['set:' + k] = rt['set:' + k]; n++; }
+  for (const k of ['program', 'meals', 'swapFoods']) if (p.data[k] && newer(k)) { data[k] = p.data[k]; lt[k] = rt[k]; n++; }
+  data.exportLog ||= {};
+  for (const [k, v] of Object.entries(p.data.exportLog || {})) if (!data.exportLog[k]) { data.exportLog[k] = v; n++; } // Apple Health sends: never twice
+  if (!n) return 0;
+  data = migrate(data);
+  takeSnapshot();
+  memo.clear(); workbookDirty = true;
+  clearTimeout(saveTimer); store.save(data);
+  ui.lastSync = { from: p.deviceName || 'your other computer', at: Date.now() };
+  const typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  if (!typing) render(); else refreshBackupCard();
+  toast(`Synced from ${p.deviceName || 'your other computer'}${days ? ` (${days} day${days === 1 ? '' : 's'})` : ''}`);
+  return n;
+}
+window.addEventListener('beforeunload', () => { clearTimeout(saveTimer); stampChanges(); store.save(data); });
 
 const memo = new Map();
 const memoize = (key, fn) => { if (!memo.has(key)) memo.set(key, fn()); return memo.get(key); };
@@ -1726,7 +1775,7 @@ function viewSettings() {
       <div class="form-grid">
         <label class="toggle"><input type="checkbox" data-set="remOn" ${s.reminder.on ? 'checked' : ''}><span>Remind me to train if I haven't started</span></label>
         <label class="field"><span>At</span><input type="time" data-set="remTime" value="${s.reminder.time}"></label>
-        <label class="toggle"><input type="checkbox" data-set="login" id="login-toggle"><span>Open when I sign in to Windows</span></label>
+        <label class="toggle"><input type="checkbox" data-set="login" id="login-toggle"><span>${isMacApp() ? 'Open when I log in to this Mac' : 'Open when I sign in to Windows'}</span></label>
       </div>
     </section>
 
@@ -2021,6 +2070,7 @@ document.addEventListener('click', async (e) => {
     case 'backup-use': setBackupDir(a.dataset.dir); return;
     case 'backup-pick': { const dir = await window.api?.backup?.pick(); if (dir) setBackupDir(dir); return; }
     case 'backup-off': setBackupDir(null); return;
+    case 'sync-now': window.api?.sync?.pull?.().then(d => { ui.devices = d; refreshBackupCard(); toast(d?.length ? 'Checked for changes' : 'No other computers found yet'); }); return;
     case 'backup-now': window.api?.backup?.now().then(st => { ui.backup = st; writeWorkbook(true); refreshBackupCard(); toast(st.error ? st.error : 'Backed up'); }); return;
     case 'backup-nudge-off': data.settings.backupNudgeOff = true; break;
     case 'add-break': { const t = todayStr(); (data.settings.breaks ||= []).push({ id: 'b-' + uid(), label: 'Time off', start: t, end: addDays(t, 6) }); break; }
@@ -2244,15 +2294,31 @@ function backupCard() {
   const dir = data.settings.backupDir, st = ui.backup || {}, sug = ui.backupSuggest || [];
   if (!window.api?.backup) return `<header class="card-head"><h2>Cloud backup</h2></header><p class="hint">Cloud backup works in the desktop app.</p>`;
   const when = st.lastAt ? new Date(st.lastAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
-  return `<header class="card-head"><h2>Cloud backup</h2>${dir && !st.error ? `<span class="pill ok">${when ? 'Backed up ' + esc(when) : 'On'}</span>` : ''}</header>
-    <p>Keeps a copy of your history in a cloud folder, so a dead drive or a new PC doesn't lose it. Saves every 10 minutes while you use the app, keeps one file per day for 60 days, and <code>latest.json</code> is always current.</p>
+  const sep = isMacApp() ? '/' : '\\';
+  const ago = (t) => { if (!t) return 'never'; const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
+  const os = (p) => ({ darwin: 'Mac', win32: 'Windows', linux: 'Linux' })[p] || p || '';
+  const devs = ui.devices || [];
+  const syncHtml = dir ? `<div class="sync-box">
+      <h3 class="sub-h">Sync between your computers</h3>
+      <p class="hint">Install Workout Tracker on each computer and turn on cloud backup with the same ${esc(sug[0]?.name || 'cloud')} account. They keep each other up to date through this folder: whatever you changed most recently wins, day by day.</p>
+      <ul class="devices">
+        <li class="me"><b>${esc(data.settings.deviceName || 'This computer')}</b><span>This computer, ${esc(os(window.api?.platform))}</span><small>${st.syncAt ? `Shared ${ago(st.syncAt)}` : 'Sharing…'}</small></li>
+        ${devs.map(d => `<li><b>${esc(d.deviceName || 'Other computer')}</b><span>${esc(os(d.platform))}${d.version ? `, version ${esc(d.version)}` : ''}</span><small>Last change ${ago(d.lastChange)}</small></li>`).join('')}
+      </ul>
+      ${devs.length ? '' : '<p class="hint">No other computers yet. Once your other computer uses the same folder, it shows up here within a minute.</p>'}
+      ${ui.lastSync ? `<p class="sync-status ok">Synced from ${esc(ui.lastSync.from)} ${ago(ui.lastSync.at)}.</p>` : ''}
+      <button class="btn btn-small btn-ghost" data-action="sync-now">Sync now</button>
+    </div>` : '';
+  return `<header class="card-head"><h2>Cloud backup and sync</h2>${dir && !st.error ? `<span class="pill ok">${when ? 'Backed up ' + esc(when) : 'On'}</span>` : ''}</header>
+    <p>Keeps a copy of your history in a cloud folder, so a dead drive or a new computer doesn't lose it, and keeps your computers in sync. Backups save every 10 minutes, one file per day for 60 days, in a folder for each computer.</p>
     <p><b>Workout Tracker Data.xlsx</b> sits next to it: your full history as readable tabs (Guide, Summary, Daily, Sets, Food, Plans). Open it in Google Sheets or Excel, or point an AI assistant like Claude at it to ask questions about your training.</p>
-    ${dir ? `<div class="copy-row"><span>Folder</span><code>${esc(dir)}\\Workout Tracker Backups</code><button class="btn btn-small btn-ghost" data-action="backup-off">Turn off</button></div>
+    ${dir ? `<div class="copy-row"><span>Folder</span><code>${esc(dir)}${sep}Workout Tracker Backups</code><button class="btn btn-small btn-ghost" data-action="backup-off">Turn off</button></div>
       ${st.error ? `<p class="sync-status bad">${esc(st.error)}</p>` : ''}
       ${st.workbookError ? `<p class="sync-status bad">${esc(st.workbookError)}</p>` : st.workbookAt ? `<p class="sync-status ok">Workout Tracker Data.xlsx updated ${new Date(st.workbookAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.</p>` : ''}
-      <div class="row-gap wrap"><button class="btn btn-small" data-action="backup-now">Back up now</button><span class="hint">To restore on another PC, use Restore from backup below and pick latest.json.</span></div>`
+      <div class="row-gap wrap"><button class="btn btn-small" data-action="backup-now">Back up now</button><span class="hint">To restore by hand, use Restore from backup below and pick devices${sep}${esc(data.settings.deviceName || 'computer name')}${sep}latest.json.</span></div>
+      ${syncHtml}`
     : `<div class="row-gap wrap">${sug.map(x => `<button class="btn" data-action="backup-use" data-dir="${esc(x.dir)}">Use ${esc(x.name)}</button>`).join('')}<button class="btn ${sug.length ? 'btn-ghost' : ''}" data-action="backup-pick">Choose a folder</button></div>
-      ${sug.length ? '' : '<p class="hint">No OneDrive or iCloud Drive folder found on this PC. Install one of them, or choose any synced folder.</p>'}`}`;
+      ${sug.length ? '' : '<p class="hint">No Google Drive, OneDrive or iCloud Drive folder found on this computer. Install Google Drive for desktop, or choose any synced folder.</p>'}`}`;
 }
 // ---------- Readable workbook (Excel) for people and AI tools ----------
 const yn = (v) => v ? 'yes' : 'no';
@@ -2385,6 +2451,8 @@ let workbookAt = 0, workbookDirty = true;
 function writeWorkbook(force) {
   if (!window.api?.backup || !data.settings.backupDir) return;
   if (!force && (!workbookDirty || Date.now() - workbookAt < 10 * 60 * 1000)) return;
+  const mine = Math.max(0, ...Object.values(data.meta?.t || {})), theirs = Math.max(0, ...(ui.devices || []).map(d => d.lastChange || 0));
+  if (theirs > mine + 1000) return; // another computer has newer changes; it keeps the workbook current
   workbookAt = Date.now(); workbookDirty = false;
   try { window.api.backup.workbook(workbookSheets()).then(st => { ui.backup = st; refreshBackupCard(); }); }
   catch (err) { console.error(err); }
@@ -2430,7 +2498,7 @@ function healthCard() {
         <div class="row-gap wrap"><label class="field port-field"><span>Port</span><input type="number" data-health="port" value="${port}"></label><button class="link-btn" data-action="new-key">Make a new key</button></div>` : ''}
       </div>
       <div class="sync-opt">
-        <div class="toggle"><span><b>Watch an iCloud Drive folder</b><small>Works even if this PC was off when your iPhone synced. Needs iCloud for Windows.</small></span></div>
+        <div class="toggle"><span><b>Watch an iCloud Drive folder</b><small>Works even if this computer was off when your iPhone synced.${isMacApp() ? '' : ' Needs iCloud for Windows.'}</small></span></div>
         ${s.watchDir ? `<div class="copy-row"><span>Folder</span><code>${esc(s.watchDir)}</code><button class="btn btn-small btn-ghost" data-action="unwatch">Stop</button></div>
           ${st.watch?.error ? `<p class="sync-status bad">${esc(st.watch.error)}</p>` : st.watch?.lastAt ? `<p class="sync-status ok">Last file: ${esc(st.watch.lastFile)} at ${new Date(st.watch.lastAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.</p>` : '<p class="sync-status">Watching for new files.</p>'}`
         : `<button class="btn" data-action="pick-watch">Choose folder</button>`}
@@ -2662,6 +2730,15 @@ function migrate(d) {
   d.settings.share = { ...base.settings.share, ...(d.settings.share || {}) };
   d.settings.goal = { ...base.settings.goal, ...(d.settings.goal || {}) };
   d.swapFoods ||= structuredClone(DEFAULT_SWAPS);
+  if (!d.meta) {
+    // Data from before sync existed: mark everything as "changed long ago" (1) so a fresh install never overrides it.
+    d.meta = { t: {} };
+    const t = d.meta.t;
+    for (const k of ['program', 'meals', 'swapFoods']) t[k] = 1;
+    for (const k of Object.keys(d.settings)) if (!LOCAL_KEYS.includes(k)) t['set:' + k] = 1;
+    for (const k of Object.keys(d.days)) t['day:' + k] = 1;
+    for (const k of Object.keys(d.health)) t['health:' + k] = 1;
+  }
   d.exportLog ||= {};
   d.settings.breaks ||= [];
   // One-time: time off the user asked for (Nov 13-26, 2026). Rename or change it in Settings.
@@ -2714,6 +2791,11 @@ const ICON = {
 (async function boot() {
   const loaded = await store.load();
   data = loaded ? migrate(loaded) : defaultData();
+  const sys = window.api ? await window.api.info().catch(() => null) : null;
+  if (sys?.platform) document.body.classList.add('platform-' + sys.platform);
+  data.settings.deviceId ||= 'd-' + uid() + uid();
+  if (sys?.hostname) data.settings.deviceName = sys.hostname;
+  takeSnapshot();
   if (!loaded) save();
   applyTheme();
   render();
@@ -2729,7 +2811,11 @@ const ICON = {
   if (window.api?.backup) {
     window.api.backup.onState(st => { ui.backup = st; refreshBackupCard(); });
     window.api.backup.suggest().then(sg => { ui.backupSuggest = sg; if (ui.view === 'today' || ui.view === 'settings') render(); }).catch(() => {});
-    if (data.settings.backupDir) window.api.backup.configure(data.settings.backupDir).then(st => { ui.backup = st; refreshBackupCard(); writeWorkbook(true); });
+    if (data.settings.backupDir) { store.save(data); window.api.backup.configure(data.settings.backupDir).then(st => { ui.backup = st; refreshBackupCard(); writeWorkbook(true); }); }
+  }
+  if (window.api?.sync?.onRemote) {
+    window.api.sync.onRemote(mergeRemote);
+    window.api.sync.onDevices(d => { ui.devices = d; refreshBackupCard(); });
   }
   if (window.api?.sync) {
     window.api.sync.onPush(onHealthPush);

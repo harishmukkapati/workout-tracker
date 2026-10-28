@@ -1,14 +1,15 @@
 {
   "name": "workout-tracker",
   "productName": "Workout Tracker",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Personal workout, food and consistency tracker",
   "main": "shell/main.js",
   "author": "Workout Tracker",
   "license": "UNLICENSED",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win nsis --x64"
+    "build": "electron-builder --win nsis --x64",
+    "build:mac": "electron-builder --mac zip --arm64 --x64"
   },
   "dependencies": {
     "yauzl": "^3.2.0"
@@ -47,6 +48,21 @@
     },
     "electronLanguages": [
       "en-US"
-    ]
+    ],
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.healthcare-fitness",
+      "target": [
+        "zip"
+      ],
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "artifactName": "Workout-Tracker-mac-${arch}.${ext}",
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "Workout Tracker receives Apple Health data from your iPhone over Wi-Fi.",
+        "LSApplicationCategoryType": "public.app-category.healthcare-fitness"
+      }
+    }
   }
 }
