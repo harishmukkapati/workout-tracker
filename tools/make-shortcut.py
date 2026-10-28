@@ -3,7 +3,7 @@
 
     python3 tools/make-shortcut.py "http://192.168.1.20:47821/export?key=YOURKEY" out.shortcut
 
-The URL becomes the default answer to the question Shortcuts asks when you add it.
+The URL is built into the shortcut. To change it later, edit the Get Contents of URL step.
 iPhones only import signed shortcuts, so sign it on a Mac first:
 
     shortcuts sign --mode anyone --input out.shortcut --output "Save to Apple Health.shortcut"
@@ -180,17 +180,11 @@ shortcut = {
         'WFURLContentItem',
     ],
     'WFWorkflowOutputContentItemClasses': [],
-    'WFWorkflowImportQuestions': [{
-        'ActionIndex': 1,  # the Get Contents of URL action (index 0 is the first comment)
-        'Category': 'Parameter',
-        'ParameterKey': 'WFURL',
-        'Text': 'Paste the link from Workout Tracker: Settings, Apple Health, "Set up the Save to Apple Health Shortcut".',
-        'DefaultValue': url,
-    }],
+    'WFWorkflowImportQuestions': [],
     'WFWorkflowActions': actions,
 }
 
 assert actions[1]['WFWorkflowActionIdentifier'] == 'is.workflow.actions.downloadurl'
 with open(out, 'wb') as f:
-    plistlib.dump(shortcut, f, fmt=plistlib.FMT_BINARY)
+    plistlib.dump(shortcut, f, fmt=plistlib.FMT_XML)  # `shortcuts sign` wants XML
 print(f'Wrote {out}: {len(actions)} actions')
