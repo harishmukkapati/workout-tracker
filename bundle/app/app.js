@@ -2483,7 +2483,7 @@ function healthCard() {
   const last = s.lastHealthSync ? new Date(s.lastHealthSync).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
   const sources = s.healthSources.map((src, i) => `<li><b>${({ apple: 'Apple Health', google: 'Google Fit', csv: 'CSV' })[src.kind] || 'File'}</b><span class="path">${esc(src.path)}</span><small>${esc(src.summary || '')}${src.at ? ', imported ' + new Date(src.at).toLocaleString() : ''}</small><button class="icon-btn sm" data-action="del-source" data-i="${i}" aria-label="Stop syncing">${ICON.x}</button></li>`).join('');
   let wifiStatus = '';
-  if (sy.enabled) wifiStatus = st.error ? `<p class="sync-status bad">${esc(st.error)}</p>` : st.listening ? `<p class="sync-status ok">Ready for your iPhone on port ${port}.${st.lastAt ? ` Last received ${new Date(st.lastAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}: ${esc(st.lastSummary || '')}.` : ''}</p>` : '<p class="sync-status">Starting…</p>';
+  if (sy.enabled) wifiStatus = st.error ? `<p class="sync-status bad" data-live="wifi">${esc(st.error)}</p>` : st.listening ? `<p class="sync-status ok" data-live="wifi">Ready for your iPhone on port ${port}.${st.lastAt ? ` Last received ${new Date(st.lastAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}: ${esc(st.lastSummary || '')}.` : ''}</p>` : '<p class="sync-status" data-live="wifi">Starting…</p>';
   return `<header class="card-head"><h2>Apple Health and Fitness</h2>${last ? `<span class="pill ok">Last sync ${esc(last)}</span>` : ''}</header>
     <p>Your iPhone sends Apple Health data here automatically: Move, Exercise and Stand, steps, active and resting calories, weight, resting heart rate and sleep. Synced days replace the calorie estimate, and synced weight fills in your weigh-ins.</p>
     ${!desktop ? '<p class="hint">Syncing works in the desktop app.</p>' : `
@@ -2538,6 +2538,8 @@ function healthCard() {
     </details>`;
 }
 // ---------- Send to Apple Health ----------
+// Plain-English date for the iPhone Shortcut ("October 28, 2026 at 12:00 PM"), which Shortcuts reads reliably.
+const whenText = (ms) => new Date(ms).toLocaleString('en-US', { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 function isoLocal(ms) {
   const d = new Date(ms), off = -d.getTimezoneOffset(), sign = off >= 0 ? '+' : '-';
   return `${fmtDate(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:00${sign}${pad(Math.floor(Math.abs(off) / 60))}:${pad(Math.abs(off) % 60)}`;
@@ -2565,7 +2567,7 @@ function exportCandidates() {
       const minutes = Math.round(Math.max(10, energy.minutes));
       liftEnd = start + minutes * 60000;
       if (sh.workouts && finished && !log['w:' + d]) {
-        out.workouts.push({ start: isoLocal(start), minutes, kcal: sh.calories ? Math.round(energy.kcal) : 0, day: d });
+        out.workouts.push({ start: isoLocal(start), when: whenText(start), minutes, kcal: sh.calories ? Math.round(energy.kcal) : 0, day: d });
         keys.push('w:' + d);
       }
     }
@@ -2573,20 +2575,22 @@ function exportCandidates() {
     for (const b of cardioBlocks()) for (const it of b.items) {
       const c = rec.cardio?.[it.id], k = `c:${d}:${it.id}`;
       if (!sh.cardio || !c?.done || !(+c.min > 0) || !finished || log[k]) continue;
-      out.cardio.push({ name: it.name, start: isoLocal(liftEnd), minutes: +c.min, kcal: sh.calories ? Math.round(+c.min * kcalPerMin(it.met || 6, d)) : 0, day: d });
+      out.cardio.push({ name: it.name, start: isoLocal(liftEnd), when: whenText(liftEnd), minutes: +c.min, kcal: sh.calories ? Math.round(+c.min * kcalPerMin(it.met || 6, d)) : 0, day: d });
       keys.push(k);
     }
     // Food: complete days, plus today after the cutoff time
     if (sh.food && !log['f:' + d] && (d < today || foodReadyToday)) {
       const { t, count } = nutrition(dayEntries(rec));
       if (count) {
-        out.food.push({ date: isoLocal(d < today ? at(d, 20) : Date.now()), water_oz: (+rec.water || 0) * 8, kcal: Math.round(t.kcal), protein: Math.round(t.protein), carbs: Math.round(t.carbs), fat: Math.round(t.fat), fiber: Math.round(t.fiber), sugar: Math.round(t.sugar), sodium: Math.round(t.sodium), day: d });
+        const fAt = d < today ? at(d, 20) : Date.now();
+        out.food.push({ date: isoLocal(fAt), when: whenText(fAt), water_oz: (+rec.water || 0) * 8, water_ml: Math.round((+rec.water || 0) * 8 * 29.5735), kcal: Math.round(t.kcal), protein: Math.round(t.protein), carbs: Math.round(t.carbs), fat: Math.round(t.fat), fiber: Math.round(t.fiber), sugar: Math.round(t.sugar), sodium: Math.round(t.sodium), day: d });
         keys.push('f:' + d);
       }
     }
     // Weigh-ins you typed (skip ones that came from Apple Health in the first place)
     if (sh.weight && rec.weight && !log['wt:' + d] && data.health[d]?.weightLb !== rec.weight) {
-      out.weights.push({ date: isoLocal(sameDay(rec.weightAt, d) ? rec.weightAt : at(d, 7)), lb: rec.weight, day: d });
+      const wAt = sameDay(rec.weightAt, d) ? rec.weightAt : at(d, 7);
+      out.weights.push({ date: isoLocal(wAt), when: whenText(wAt), lb: rec.weight, day: d });
       keys.push('wt:' + d);
     }
   }
@@ -2626,12 +2630,12 @@ function shareSection(url, key) {
       <div class="row-gap wrap"><button class="btn btn-small btn-ghost" data-action="resend-week">Send the last 7 days again</button></div>
       <details class="howto"><summary>Set up the "Save to Apple Health" Shortcut</summary>
         <ol>
-          <li>In <b>Shortcuts</b>, make a new shortcut named Save to Apple Health.</li>
+          <li>In <b>Shortcuts</b>, make a new shortcut named Save to Apple Health. (A ready-made one can be built with <code>tools/make-shortcut.py</code> in the app's GitHub repo, then signed on a Mac.)</li>
           <li><b>Get Contents of URL</b>: <code>${esc(exportUrl)}</code> (method GET).</li>
-          <li><b>Get Dictionary Value</b>: Value for <code>workouts</code> in Contents of URL. Then <b>Repeat with Each</b> item in it. Inside the repeat, add three <b>Get Dictionary Value</b> actions on Repeat Item for <code>start</code>, <code>minutes</code> and <code>kcal</code>, then <b>Log Workout</b>: type Traditional Strength Training, Start Date = start, Duration = minutes (min), Calories = kcal (kcal).</li>
+          <li><b>Get Dictionary Value</b>: Value for <code>workouts</code> in Contents of URL. Then <b>Repeat with Each</b> item in it. Inside the repeat, add three <b>Get Dictionary Value</b> actions on Repeat Item for <code>when</code>, <code>minutes</code> and <code>kcal</code>, then <b>Log Workout</b>: type Traditional Strength Training, Start Date = <code>when</code>, Duration = minutes (min), Calories = kcal (kcal).</li>
           <li>Do the same for <code>cardio</code> with workout type Mixed Cardio.</li>
-          <li>Repeat over <code>food</code>. Inside, get <code>date</code>, then add <b>Log Health Sample</b> once per item: Dietary Energy = <code>kcal</code>, Protein = <code>protein</code> (g), Carbohydrates = <code>carbs</code> (g), Total Fat = <code>fat</code> (g), Fiber = <code>fiber</code> (g), Dietary Sugar = <code>sugar</code> (g), Sodium = <code>sodium</code> (mg), Water = <code>water_oz</code> (fl oz), each with Date = date.</li>
-          <li>Repeat over <code>weights</code>: <b>Log Health Sample</b> Weight = <code>lb</code> (lb), Date = <code>date</code>.</li>
+          <li>Repeat over <code>food</code>. Inside, get <code>when</code>, then add <b>Log Health Sample</b> once per item: Dietary Energy = <code>kcal</code>, Protein = <code>protein</code> (g), Carbohydrates = <code>carbs</code> (g), Total Fat = <code>fat</code> (g), Fiber = <code>fiber</code> (g), Dietary Sugar = <code>sugar</code> (g), Sodium = <code>sodium</code> (mg), Water = <code>water_ml</code> (mL), each with Date = when.</li>
+          <li>Repeat over <code>weights</code>: <b>Log Health Sample</b> Weight = <code>lb</code> (lb), Date = <code>when</code>.</li>
           <li>Under <b>Automation</b>, run it every night (for example 10 PM) with <b>Run Immediately</b> on. Your phone needs to be on the same Wi-Fi as this PC, with the app open or in the tray.</li>
         </ol>
         <p>Test without sending anything: open <code>${esc(exportUrl)}&peek</code> in Safari on your iPhone to see what's waiting.</p>
@@ -2641,7 +2645,15 @@ function shareSection(url, key) {
 
 function refreshHealthCard() {
   const card = $('#health-card');
-  if (card && !card.contains(document.activeElement)) card.innerHTML = healthCard();
+  if (!card) return;
+  if (!card.contains(document.activeElement)) { card.innerHTML = healthCard(); return; }
+  // You're typing in the card: leave the inputs alone, but keep status lines current.
+  const next = document.createElement('div');
+  next.innerHTML = healthCard();
+  for (const el of next.querySelectorAll('[data-live]')) {
+    const cur = card.querySelector(`[data-live="${el.dataset.live}"]`);
+    if (cur && cur.outerHTML !== el.outerHTML) cur.replaceWith(el);
+  }
 }
 function applySync() {
   if (!window.api?.sync) return;

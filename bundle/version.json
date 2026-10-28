@@ -1,6 +1,6 @@
 {
-  "version": "1.9.0",
+  "version": "1.9.1",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Sync between your computers through Google Drive, and Mac support."
+  "notes": "Ready-made Apple Health Shortcut support, and the Wi-Fi status now updates right away."
 }
