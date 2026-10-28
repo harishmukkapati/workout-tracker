@@ -108,15 +108,16 @@ workouts('cardio', 'Cardio', 'Mixed Cardio')
 # 3. Food, one entry per finished day
 comment("Food: each finished day's totals")
 food = get_value(fetched, 'food', 'Food')
+# Types use the Health app's English names (what the Log Health Sample picker shows).
 NUTRIENTS = [
-    ('kcal', 'Dietary Energy Consumed', 'kcal', 'Calories Eaten'),
-    ('protein', 'Dietary Protein', 'g', 'Protein'),
-    ('carbs', 'Dietary Carbohydrates', 'g', 'Carbs'),
-    ('fat', 'Dietary Fat Total', 'g', 'Fat'),
-    ('fiber', 'Dietary Fiber', 'g', 'Fiber'),
+    ('kcal', 'Dietary Energy', 'kcal', 'Calories Eaten'),
+    ('protein', 'Protein', 'g', 'Protein'),
+    ('carbs', 'Carbohydrates', 'g', 'Carbs'),
+    ('fat', 'Total Fat', 'g', 'Fat'),
+    ('fiber', 'Fiber', 'g', 'Fiber'),
     ('sugar', 'Dietary Sugar', 'g', 'Sugar'),
-    ('sodium', 'Dietary Sodium', 'mg', 'Sodium'),
-    ('water_ml', 'Dietary Water', 'mL', 'Water'),
+    ('sodium', 'Sodium', 'mg', 'Sodium'),
+    ('water_ml', 'Water', 'mL', 'Water'),
 ]
 
 
@@ -143,7 +144,7 @@ def weight_body():
     when = get_date(get_value(REPEAT_ITEM, 'when', 'Weighed Text'), 'Weighed')
     lb = get_value(REPEAT_ITEM, 'lb', 'Pounds')
     add('health.quantity.log', {
-        'WFQuantitySampleType': 'Body Mass',
+        'WFQuantitySampleType': 'Weight',
         'WFQuantitySampleQuantity': qty(lb, 'lb'),
         'WFQuantitySampleDate': attach(when),
         'WFSampleEndDate': attach(when),
