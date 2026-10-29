@@ -170,6 +170,7 @@ function defaultData() {
     days: {},
     health: {},
     swapFoods: structuredClone(DEFAULT_SWAPS),
+    foods: [],
     meta: { t: {} },
   };
 }
@@ -204,7 +205,7 @@ function save() {
 const LOCAL_KEYS = ['backupDir', 'watchDir', 'healthSources', 'sync', 'background', 'lastNotified', 'lastVersion', 'backupNudgeOff', 'lastHealthSync', 'deviceId', 'deviceName'];
 const isMacApp = () => window.api?.platform === 'darwin';
 function syncPieces() {
-  const out = { program: data.program, meals: data.meals, swapFoods: data.swapFoods || [] };
+  const out = { program: data.program, meals: data.meals, swapFoods: data.swapFoods || [], foods: data.foods || [] };
   for (const [k, v] of Object.entries(data.settings)) if (!LOCAL_KEYS.includes(k)) out['set:' + k] = v;
   for (const [d, r] of Object.entries(data.days)) out['day:' + d] = r;
   for (const [d, h] of Object.entries(data.health)) out['health:' + d] = h;
@@ -229,7 +230,7 @@ function mergeRemote(p) {
   for (const [d, r] of Object.entries(p.data.days || {})) if (newer('day:' + d)) { data.days[d] = r; lt['day:' + d] = rt['day:' + d]; n++; days++; }
   for (const [d, h] of Object.entries(p.data.health || {})) if (newer('health:' + d)) { data.health[d] = h; lt['health:' + d] = rt['health:' + d]; n++; }
   for (const [k, v] of Object.entries(p.data.settings || {})) if (!LOCAL_KEYS.includes(k) && newer('set:' + k)) { data.settings[k] = v; lt['set:' + k] = rt['set:' + k]; n++; }
-  for (const k of ['program', 'meals', 'swapFoods']) if (p.data[k] && newer(k)) { data[k] = p.data[k]; lt[k] = rt[k]; n++; }
+  for (const k of ['program', 'meals', 'swapFoods', 'foods']) if (p.data[k] && newer(k)) { data[k] = p.data[k]; lt[k] = rt[k]; n++; }
   data.exportLog ||= {};
   for (const [k, v] of Object.entries(p.data.exportLog || {})) if (!data.exportLog[k]) { data.exportLog[k] = v; n++; } // Apple Health sends: never twice
   if (!n) return 0;
@@ -385,9 +386,9 @@ function dayEntries(rec) {
   for (const [id, f] of Object.entries(rec?.food || {})) {
     if (!f.on) continue;
     const p = planItemById(id);
-    out.push({ name: f.name || p?.it.name || 'Food', meal: p?.meal.name || 'Other', qty: +f.qty || 0, kcal: +f.kcal || 0, protein: +f.protein || 0, n: f.n || p?.it.n || {} });
+    out.push({ name: f.name || p?.it.name || 'Food', meal: p?.meal.name || 'Other', qty: +f.qty || 0, unit: f.unit || p?.it.unit || '', kcal: +f.kcal || 0, protein: +f.protein || 0, n: f.n || p?.it.n || {} });
   }
-  for (const c of rec?.custom || []) out.push({ name: c.name, meal: 'Extras', qty: 1, kcal: +c.kcal || 0, protein: +c.protein || 0, n: { carbs: +c.carbs || 0, fat: +c.fat || 0 } });
+  for (const c of rec?.custom || []) out.push({ name: c.name, meal: 'Extras', qty: c.qty ?? 1, unit: c.unit || 'entry', kcal: +c.kcal || 0, protein: +c.protein || 0, n: c.n || { carbs: +c.carbs || 0, fat: +c.fat || 0 } });
   return out;
 }
 // The meal plan as written, if you eat everything.
@@ -418,6 +419,107 @@ function averageNutrition(days) {
   return { ...nutrition(all), days: logged.length };
 }
 const snap = (it, on, qty) => ({ on, qty: qty ?? it.qty, kcal: it.kcal, protein: it.protein, n: it.n || {}, name: it.name });
+
+// ----- Food library: your saved foods (data.foods) plus the built-in list (foods.js) -----
+const libFoods = () => [...(data.foods || []).map(f => ({ ...f, mine: true })), ...(window.FOOD_DB || [])];
+const libFood = (id) => libFoods().find(f => f.id === id);
+const foodStep = (unit) => /cup|oz|tbsp|tsp|scoop|glass|serving|mL|\bg\b/i.test(unit || '') ? 0.5 : 1;
+function searchFoods(q, limit = 8) {
+  const words = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const scored = [];
+  for (const f of libFoods()) {
+    const name = f.name.toLowerCase(), hay = name + ' ' + (f.cat || '').toLowerCase();
+    if (!words.every(w => hay.includes(w))) continue;
+    let sc = 0;
+    if (name.startsWith(words[0])) sc += 3;
+    else if (name.split(/[\s(,-]+/).some(t => t.startsWith(words[0]))) sc += 2;
+    if (f.mine) sc += 2.5;
+    scored.push([sc - name.length / 100, f]);
+  }
+  return scored.sort((a, b) => b[0] - a[0]).slice(0, limit).map(x => x[1]);
+}
+// Foods added to Extras lately, newest first (so the usual ones are one tap away).
+function recentFoods(limit = 6) {
+  const out = [], seen = new Set();
+  for (let i = 0; i < 60 && out.length < limit; i++) {
+    const rec = data.days[addDays(todayStr(), -i)];
+    for (const c of [...(rec?.custom || [])].reverse()) {
+      const f = (c.foodId && libFood(c.foodId)) || null;
+      const key = f ? f.id : c.name.toLowerCase();
+      if (!f || seen.has(key)) continue;
+      seen.add(key); out.push(f);
+      if (out.length >= limit) break;
+    }
+  }
+  for (const f of data.foods || []) { if (out.length >= limit) break; if (!seen.has(f.id)) { seen.add(f.id); out.push({ ...f, mine: true }); } }
+  return out;
+}
+function addLibFood(date, f, qty) {
+  getDay(date).custom.push({ id: uid(), foodId: f.id, name: f.name, unit: f.unit, qty: qty ?? f.qty ?? 1, kcal: +f.kcal || 0, protein: +f.protein || 0, n: { ...(f.n || {}) } });
+}
+const foodLine = (f) => `${esc(f.unit)}, ${num(f.kcal)} kcal, ${num(f.protein)} g protein`;
+function foodResults(q) {
+  q = String(q || '').trim();
+  if (!q) {
+    const rec = recentFoods();
+    return rec.length ? `<div class="food-recent"><span>Recent</span>${rec.map(f => `<button class="chip" data-action="add-libfood" data-fid="${f.id}" title="${foodLine(f)}">${esc(f.name)}</button>`).join('')}</div>`
+      : `<p class="hint food-hint">Search ${(window.FOOD_DB || []).length}+ common foods, or create your own with its label.</p>`;
+  }
+  const hits = searchFoods(q);
+  return `<div class="food-hits">${hits.map((f, i) => `<div class="food-hit ${i === 0 ? 'first' : ''}">
+      <button class="hit-main" data-action="add-libfood" data-fid="${f.id}"><b>${esc(f.name)}${f.mine ? '<span class="tag">Yours</span>' : ''}</b><small>${foodLine(f)}</small></button>
+      <button class="icon-btn sm" data-action="edit-libfood" data-fid="${f.id}" aria-label="${f.mine ? 'Edit' : 'Change and save'} ${esc(f.name)}" title="${f.mine ? 'Edit' : 'Change it, then save to My foods'}">${ICON.edit}</button>
+    </div>`).join('')}
+    <button class="food-hit create" data-action="new-food"><b>Create "${esc(q)}"</b><small>Enter it from the label and save it for next time</small></button></div>`;
+}
+function refreshFoodResults() { const r = $('#food-results'); if (r) r.innerHTML = foodResults(ui.foodQ); }
+
+// Create or edit a food. opts: { addTo: date to also add it to, name: starting name }
+const FOOD_FIELDS = [['carbs', 'Carbs', 'g'], ['fat', 'Fat', 'g'], ['satFat', 'Saturated fat', 'g'], ['fiber', 'Fiber', 'g'], ['sugar', 'Sugars', 'g'], ['sodium', 'Sodium', 'mg'], ['chol', 'Cholesterol', 'mg']];
+function openFoodEditor(f, opts = {}) {
+  const mine = !!(f && f.mine);
+  const v = f || { name: opts.name || '', unit: 'serving', qty: 1, kcal: '', protein: '', n: {} };
+  const numIn = (name, label, unit, val) => `<label class="field"><span>${esc(label)}${unit ? ` (${unit})` : ''}</span><input type="number" step="any" min="0" name="${name}" value="${val ?? ''}" placeholder="0"></label>`;
+  const others = NUTRIENTS.filter(n => !['protein', ...FOOD_FIELDS.map(x => x[0])].includes(n.k));
+  const title = mine ? `Edit ${esc(v.name)}` : f ? `Save ${esc(v.name)} as your own` : 'Create a food';
+  openModal(`<h2>${title}</h2>
+    <form class="food-editor" data-form="food-editor">
+      <div class="fe-grid">
+        <label class="field fe-name"><span>Name</span><input name="name" required value="${esc(v.name)}" placeholder="Fairlife fat-free milk"></label>
+        <label class="field fe-unit"><span>Serving</span><input name="unit" required value="${esc(v.unit || 'serving')}" placeholder="cup (240 mL)"></label>
+        ${numIn('kcal', 'Calories', '', v.kcal)}
+        ${numIn('protein', 'Protein', 'g', v.protein)}
+        ${FOOD_FIELDS.map(([k, l, u]) => numIn('n.' + k, l, u, v.n?.[k])).join('')}
+      </div>
+      <details class="fe-more"><summary>Vitamins and minerals</summary><div class="fe-grid">${others.map(n => numIn('n.' + n.k, n.label, n.unit, v.n?.[n.k])).join('')}</div></details>
+      <p class="hint">Use the numbers for one serving from the Nutrition Facts label.</p>
+      ${opts.addTo ? `<div class="fe-add"><label class="check-opt"><input type="checkbox" name="add" checked><span>Add to ${opts.addTo === todayStr() ? 'today' : esc(longDate(opts.addTo, { month: 'short', day: 'numeric' }))}</span></label><label class="field fe-qty"><span>Servings</span><input type="number" name="qty" step="any" min="0.1" value="${v.qty || 1}"></label></div>` : ''}
+      ${!mine && opts.addTo ? `<label class="check-opt"><input type="checkbox" name="keep" checked><span>Save to My foods for next time</span></label>` : ''}
+      <div class="modal-actions">${mine ? `<button type="button" class="btn btn-ghost danger" data-del-food>Delete</button><span class="spacer"></span>` : ''}<button type="button" class="btn btn-ghost" data-close>Cancel</button><button class="btn" type="submit">${mine ? 'Save' : opts.addTo ? 'Add' : 'Save food'}</button></div>
+    </form>`, (root, close) => {
+    const form = root.querySelector('form');
+    root.querySelector('[data-del-food]')?.addEventListener('click', (e) => {
+      if (!confirmInline(e.currentTarget)) return;
+      data.foods = data.foods.filter(x => x.id !== f.id); save(); close(); render(); toast(`Deleted ${v.name}`);
+    });
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const fd = new FormData(form), n = {};
+      for (const [k, val] of fd.entries()) if (k.startsWith('n.') && val !== '' && +val) n[k.slice(2)] = +val;
+      const item = { name: String(fd.get('name')).trim(), unit: String(fd.get('unit')).trim() || 'serving', qty: 1, kcal: +fd.get('kcal') || 0, protein: +fd.get('protein') || 0, n };
+      if (!item.name) return;
+      let saved = null;
+      if (mine) { saved = data.foods.find(x => x.id === f.id); Object.assign(saved, item); }
+      else if (!opts.addTo || fd.get('keep')) { saved = { id: 'f-' + uid(), ...item }; (data.foods ||= []).push(saved); }
+      if (opts.addTo && fd.get('add')) addLibFood(opts.addTo, saved || { id: null, ...item }, +fd.get('qty') || 1);
+      ui.foodQ = '';
+      save(); close(); render();
+      toast(opts.addTo && fd.get('add') ? `Added ${item.name}${saved && !mine ? ', and saved it to My foods' : ''}` : mine ? 'Saved' : `Saved ${item.name} to My foods`);
+    });
+    root.querySelector(f ? 'input[name="kcal"]' : 'input[name="name"]')?.focus();
+  });
+}
 // Drop sets: only the last set of an exercise has one.
 function dropsDone(rec) {
   let n = 0;
@@ -1212,22 +1314,26 @@ function mealsCard(date) {
       }).join('')}</ul>
     </div>`;
   }).join('');
-  const custom = (rec?.custom || []).map(c => `<li class="food on"><span class="food-name">${esc(c.name)}<small>${num(c.protein)} g protein${c.carbs ? `, ${num(c.carbs)} g carbs` : ''}${c.fat ? `, ${num(c.fat)} g fat` : ''}</small></span><span class="food-kcal">${num(c.kcal)}</span><button class="icon-btn sm" data-action="del-custom" data-id="${c.id}" aria-label="Remove">${ICON.x}</button></li>`).join('');
+  const custom = (rec?.custom || []).map(c => {
+    const q = c.qty ?? 1, n = c.n || { carbs: c.carbs, fat: c.fat };
+    const detail = c.unit ? `${esc(c.unit)}, ${num(q * c.protein)} g protein` : `${num(c.protein)} g protein${n.carbs ? `, ${num(n.carbs)} g carbs` : ''}${n.fat ? `, ${num(n.fat)} g fat` : ''}`;
+    return `<li class="food on extra" data-cid="${c.id}"><span class="food-name">${esc(c.name)}<small>${detail}</small></span>
+      ${c.unit ? `<span class="qty"><button data-action="cqty" data-id="${c.id}" data-d="-1" aria-label="Less">−</button><b>${q}</b><button data-action="cqty" data-id="${c.id}" data-d="1" aria-label="More">+</button></span>` : '<span></span>'}
+      <span class="food-kcal">${num(q * c.kcal)}</span><button class="icon-btn sm" data-action="del-custom" data-id="${c.id}" aria-label="Remove ${esc(c.name)}">${ICON.x}</button></li>`;
+  }).join('');
+  const exK = (rec?.custom || []).reduce((a, c) => a + (c.qty ?? 1) * (+c.kcal || 0), 0);
   return `
   <section class="card meals-card">
     <header class="card-head"><h2>Food</h2><span class="hint">${num(tot.kcal)} kcal, ${num(tot.protein)} g protein</span></header>
     ${meals}
     <div class="meal">
-      <div class="meal-head"><h3 class="no-check">Extras</h3></div>
+      <div class="meal-head"><h3 class="no-check">Extras</h3>${exK ? `<span class="meal-kcal">${num(exK)} kcal</span>` : ''}</div>
       <ul>${custom}</ul>
-      <form class="add-food" data-form="custom">
-        <input name="name" placeholder="Add a food" aria-label="Food name" required class="af-name">
-        <button class="btn btn-small" type="submit">Add</button>
-        <input name="kcal" type="number" step="any" placeholder="kcal" aria-label="Calories" required>
-        <input name="protein" type="number" step="any" placeholder="Protein g" aria-label="Protein grams">
-        <input name="carbs" type="number" step="any" placeholder="Carbs g" aria-label="Carb grams">
-        <input name="fat" type="number" step="any" placeholder="Fat g" aria-label="Fat grams">
-      </form>
+      <div class="food-add">
+        <label class="food-search">${ICON.search}<input type="search" data-input="food-search" value="${esc(ui.foodQ || '')}" placeholder="Add a food" aria-label="Search foods to add" autocomplete="off"></label>
+        <button class="btn btn-small btn-ghost" data-action="new-food" title="Create a food from its label">+ New</button>
+      </div>
+      <div class="food-results" id="food-results">${foodResults(ui.foodQ)}</div>
     </div>
   </section>`;
 }
@@ -1782,6 +1888,11 @@ function viewSettings() {
     <section class="card" id="health-card">${healthCard()}</section>
 
     <section class="card"><header class="card-head"><h2>Workout plan</h2><label class="field inline-field"><span>Weight jump</span><span class="wt"><input type="number" step="2.5" min="1" data-set="weightStep" value="${+s.weightStep || 5}"><span>lb</span></span></label></header>${progEditor}</section>
+    <section class="card my-foods"><header class="card-head"><h2>My foods</h2><button class="btn btn-small btn-ghost" data-action="new-food">Create food</button></header>
+      <p class="hint">Foods you saved. They show up first when you search under Extras on Today. Edit one to fix its label numbers.</p>
+      ${(data.foods || []).length ? `<ul class="myfood-list">${[...data.foods].sort((a, b) => a.name.localeCompare(b.name)).map(f => `<li><span><b>${esc(f.name)}</b><small>${foodLine(f)}</small></span><button class="icon-btn sm" data-action="edit-myfood" data-fid="${f.id}" aria-label="Edit ${esc(f.name)}">${ICON.edit}</button></li>`).join('')}</ul>` : '<p class="hint">Nothing saved yet. Create a food, or search under Extras on Today and tap the pencil to save one.</p>'}
+    </section>
+
     <section class="card"><header class="card-head"><h2>Meal plan</h2></header><p class="hint">Numbers are per unit. Defaults come from your product labels and USDA data. Click More on any food for vitamins and minerals, and adjust them to match what you buy.</p>${mealEditor}</section>
 
     <section class="card" id="update-card">${updateCard()}</section>
@@ -2026,6 +2137,22 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'del-custom': { const rec = getDay(date); rec.custom = rec.custom.filter(c => c.id !== a.dataset.id); break; }
+    case 'cqty': {
+      const c = getDay(date).custom.find(x => x.id === a.dataset.id); if (!c) return;
+      const st = foodStep(c.unit);
+      c.qty = Math.max(st, round((c.qty ?? 1) + (+a.dataset.d) * st, 2));
+      break;
+    }
+    case 'add-libfood': {
+      const f = libFood(a.dataset.fid); if (!f) return;
+      addLibFood(date, f); ui.foodQ = '';
+      save(); render(); toast(`Added ${f.name}`);
+      $('[data-input="food-search"]')?.focus();
+      return;
+    }
+    case 'new-food': openFoodEditor(null, { addTo: a.closest('.settings') ? null : date, name: ui.foodQ?.trim() || '' }); return;
+    case 'edit-libfood': { const f = libFood(a.dataset.fid); if (f) openFoodEditor(f, { addTo: f.mine ? null : date }); return; }
+    case 'edit-myfood': { const f = (data.foods || []).find(x => x.id === a.dataset.fid); if (f) openFoodEditor({ ...f, mine: true }); return; }
     case 'edit-out': ui.editOut = ui.editOut === date ? null : date; return render();
     case 'save-out': { const v = +$('[data-input="out-override"]').value; const rec = getDay(date); rec.outOverride = v > 0 ? v : null; ui.editOut = null; break; }
     case 'clear-out': { const rec = getDay(date); rec.outOverride = null; ui.editOut = null; break; }
@@ -2169,6 +2296,7 @@ function maybeCollapse(date, exId) {
 document.addEventListener('input', (e) => {
   const el = e.target, k = el.dataset.input, date = ui.date;
   if (!k) return;
+  if (k === 'food-search') { ui.foodQ = el.value; refreshFoodResults(); return; }
   if (k === 'day-note') { getDay(date).note = el.value; save(); }
   if (k === 'ex-note') { getDay(date).exNotes[el.dataset.ex] = el.value; save(); }
   if (k === 'rehab-note') { getDay(date).rehabNote = el.value; save(); }
@@ -2265,11 +2393,6 @@ document.addEventListener('submit', (e) => {
     $('.rehab-add input[name="name"]')?.focus();
     return;
   }
-  if (f.dataset.form !== 'custom') return;
-  e.preventDefault();
-  const fd = new FormData(f);
-  getDay(ui.date).custom.push({ id: uid(), name: fd.get('name'), kcal: +fd.get('kcal') || 0, protein: +fd.get('protein') || 0, carbs: +fd.get('carbs') || 0, fat: +fd.get('fat') || 0 });
-  save(); render();
 });
 let resizeTimer;
 window.addEventListener('resize', () => {
@@ -2281,6 +2404,11 @@ window.addEventListener('resize', () => {
   }, 200);
 });
 // Keyboard: arrow keys move across rep dots.
+document.addEventListener('keydown', (e) => {
+  if (e.target.dataset?.input !== 'food-search') return;
+  if (e.key === 'Enter') { e.preventDefault(); ($('#food-results .food-hit.first .hit-main') || (ui.foodQ?.trim() ? $('#food-results .food-hit.create') : null))?.click(); }
+  if (e.key === 'Escape' && ui.foodQ) { e.preventDefault(); e.stopPropagation(); ui.foodQ = ''; e.target.value = ''; refreshFoodResults(); }
+});
 document.addEventListener('keydown', (e) => {
   const r = e.target.closest?.('.rep');
   if (!r || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
@@ -2374,7 +2502,7 @@ function workbookSheets() {
   const food = [['date', 'meal', 'food', 'quantity', 'unit', 'kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugar_g', 'sodium_mg']];
   for (const d of Object.keys(data.days).sort()) {
     for (const e of dayEntries(data.days[d])) {
-      const unit = data.meals.flatMap(m => m.items).find(it => it.name === e.name)?.unit || (e.meal === 'Extras' ? 'entry' : '');
+      const unit = e.unit || '';
       food.push([d, e.meal, e.name, e.qty, unit, r0(e.qty * e.kcal), r1(e.qty * e.protein), r1(e.qty * (+e.n.carbs || 0)), r1(e.qty * (+e.n.fat || 0)), r1(e.qty * (+e.n.fiber || 0)), r1(e.qty * (+e.n.sugar || 0)), r0(e.qty * (+e.n.sodium || 0))]);
     }
   }
@@ -2419,6 +2547,7 @@ function workbookSheets() {
   }
   plan.push([], ['meal', 'food', 'default_qty', 'unit', 'kcal_per_unit', 'protein_g_per_unit', 'carbs_g_per_unit', 'fat_g_per_unit', 'fiber_g_per_unit', 'sodium_mg_per_unit']);
   for (const m of data.meals) for (const it of m.items) plan.push([m.name, it.name, it.qty, it.unit, it.kcal, it.protein, it.n?.carbs ?? 0, it.n?.fat ?? 0, it.n?.fiber ?? 0, it.n?.sodium ?? 0]);
+  for (const it of data.foods || []) plan.push(['My foods', it.name, 1, it.unit, it.kcal, it.protein, it.n?.carbs ?? 0, it.n?.fat ?? 0, it.n?.fiber ?? 0, it.n?.sodium ?? 0]);
 
   // Guide
   const blocksText = data.program.blocks.map((b, i) => b.type === 'cardio'
@@ -2436,7 +2565,7 @@ function workbookSheets() {
     ['Tab: Sets', 'One row per logged set and side (left, right or both). est_1rm_lb is an estimated one-rep max (Epley: weight x (1 + reps/30)). drop_set_to_failure applies only to the last set. completed = the set was checked off.'],
     ['Trend and targets', 'trend_weight_lb is a smoothed body weight (10% exponential moving average). Maintenance calories = average intake minus weight-trend change x 3,500 kcal per lb over the last 28 days. kcal_target = maintenance +/- 500 kcal per lb/week of the goal, lower on time-off days. water_cups are 8 oz cups.'],
     ['Tab: Food', 'One row per food eaten per day, with totals for the quantity eaten.'],
-    ['Tab: Plans', 'The current workout plan and meal plan (per-unit nutrition).'],
+    ['Tab: Plans', 'The current workout plan and meal plan (per-unit nutrition), plus foods saved under My foods.'],
   ];
 
   return [
@@ -2761,17 +2890,19 @@ function migrate(d) {
   d.settings.share = { ...base.settings.share, ...(d.settings.share || {}) };
   d.settings.goal = { ...base.settings.goal, ...(d.settings.goal || {}) };
   d.swapFoods ||= structuredClone(DEFAULT_SWAPS);
+  d.foods ||= [];
   if (!d.meta) {
     // Data from before sync existed: mark everything as "changed long ago" (1) so a fresh install never overrides it.
     d.meta = { t: {} };
     const t = d.meta.t;
-    for (const k of ['program', 'meals', 'swapFoods']) t[k] = 1;
+    for (const k of ['program', 'meals', 'swapFoods', 'foods']) t[k] = 1;
     for (const k of Object.keys(d.settings)) if (!LOCAL_KEYS.includes(k)) t['set:' + k] = 1;
     for (const k of Object.keys(d.days)) t['day:' + k] = 1;
     for (const k of Object.keys(d.health)) t['health:' + k] = 1;
   }
   d.exportLog ||= {};
   d.settings.breaks ||= [];
+
   // One-time: time off the user asked for (Nov 13-26, 2026). Rename or change it in Settings.
   d.settings.seeded ||= {};
   if (!d.settings.seeded.timeOff1) {
@@ -2814,6 +2945,8 @@ const ICON = {
   down: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9.5 6 6 6-6"/></svg>',
   x: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg>',
   note: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10l4 4v12H5z"/><path d="M9 12h6M9 16h4"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>',
+  search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg>',
 };
 
 // ======================================================================
