@@ -56,10 +56,10 @@ def get_value(source, key, name):
     return (uid, name)
 
 
-def get_date(ref, name):
-    uid = new_id()
-    add('detect.date', {'UUID': uid, 'WFInput': attach(ref), 'CustomOutputName': name})
-    return (uid, name)
+def date_text(ref):
+    """A date field holding a variable, the way the Shortcuts editor saves it (text with one token).
+    Workout Tracker sends `when` as "October 26, 2026 at 4:31 PM", which the field reads directly."""
+    return {'Value': {'string': '\ufffc', 'attachmentsByRange': {'{0, 1}': output_ref(ref)}}, 'WFSerializationType': 'WFTextTokenString'}
 
 
 def qty(ref, unit):
@@ -88,12 +88,13 @@ def workouts(key, label, activity):
     lst = get_value(fetched, key, label)
 
     def body():
-        start = get_date(get_value(REPEAT_ITEM, 'when', 'Start Text'), 'Start')
+        start = get_value(REPEAT_ITEM, 'when', 'Start')
         minutes = get_value(REPEAT_ITEM, 'minutes', 'Minutes')
         kcal = get_value(REPEAT_ITEM, 'kcal', 'Calories')
         add('health.workout.log', {
+            'UUID': new_id(),
             'WFWorkoutReadableActivityType': activity,
-            'WFWorkoutDate': attach(start),
+            'WFWorkoutDate': date_text(start),
             'WFWorkoutDuration': qty(minutes, 'min'),
             'WFWorkoutCaloriesQuantity': qty(kcal, 'kcal'),
         })
@@ -123,14 +124,14 @@ NUTRIENTS = [
 
 
 def food_body():
-    when = get_date(get_value(REPEAT_ITEM, 'when', 'Day Text'), 'Day')
+    when = get_value(REPEAT_ITEM, 'when', 'Day')
     for key, sample, unit, name in NUTRIENTS:
         v = get_value(REPEAT_ITEM, key, name)
         add('health.quantity.log', {
+            'UUID': new_id(),
             'WFQuantitySampleType': sample,
             'WFQuantitySampleQuantity': qty(v, unit),
-            'WFQuantitySampleDate': attach(when),
-            'WFSampleEndDate': attach(when),
+            'WFQuantitySampleDate': date_text(when),
         })
 
 
@@ -142,13 +143,13 @@ weights = get_value(fetched, 'weights', 'Weigh-ins')
 
 
 def weight_body():
-    when = get_date(get_value(REPEAT_ITEM, 'when', 'Weighed Text'), 'Weighed')
+    when = get_value(REPEAT_ITEM, 'when', 'Weighed')
     lb = get_value(REPEAT_ITEM, 'lb', 'Pounds')
     add('health.quantity.log', {
+        'UUID': new_id(),
         'WFQuantitySampleType': 'Weight',
         'WFQuantitySampleQuantity': qty(lb, 'lb'),
-        'WFQuantitySampleDate': attach(when),
-        'WFSampleEndDate': attach(when),
+        'WFQuantitySampleDate': date_text(when),
     })
 
 
