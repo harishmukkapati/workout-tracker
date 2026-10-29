@@ -171,6 +171,7 @@ function defaultData() {
     health: {},
     swapFoods: structuredClone(DEFAULT_SWAPS),
     foods: [],
+    exercises: [],
     meta: { t: {} },
   };
 }
@@ -205,7 +206,7 @@ function save() {
 const LOCAL_KEYS = ['backupDir', 'watchDir', 'healthSources', 'sync', 'background', 'lastNotified', 'lastVersion', 'backupNudgeOff', 'lastHealthSync', 'deviceId', 'deviceName'];
 const isMacApp = () => window.api?.platform === 'darwin';
 function syncPieces() {
-  const out = { program: data.program, meals: data.meals, swapFoods: data.swapFoods || [], foods: data.foods || [] };
+  const out = { program: data.program, meals: data.meals, swapFoods: data.swapFoods || [], foods: data.foods || [], exercises: data.exercises || [] };
   for (const [k, v] of Object.entries(data.settings)) if (!LOCAL_KEYS.includes(k)) out['set:' + k] = v;
   for (const [d, r] of Object.entries(data.days)) out['day:' + d] = r;
   for (const [d, h] of Object.entries(data.health)) out['health:' + d] = h;
@@ -230,7 +231,7 @@ function mergeRemote(p) {
   for (const [d, r] of Object.entries(p.data.days || {})) if (newer('day:' + d)) { data.days[d] = r; lt['day:' + d] = rt['day:' + d]; n++; days++; }
   for (const [d, h] of Object.entries(p.data.health || {})) if (newer('health:' + d)) { data.health[d] = h; lt['health:' + d] = rt['health:' + d]; n++; }
   for (const [k, v] of Object.entries(p.data.settings || {})) if (!LOCAL_KEYS.includes(k) && newer('set:' + k)) { data.settings[k] = v; lt['set:' + k] = rt['set:' + k]; n++; }
-  for (const k of ['program', 'meals', 'swapFoods', 'foods']) if (p.data[k] && newer(k)) { data[k] = p.data[k]; lt[k] = rt[k]; n++; }
+  for (const k of ['program', 'meals', 'swapFoods', 'foods', 'exercises']) if (p.data[k] && newer(k)) { data[k] = p.data[k]; lt[k] = rt[k]; n++; }
   data.exportLog ||= {};
   for (const [k, v] of Object.entries(p.data.exportLog || {})) if (!data.exportLog[k]) { data.exportLog[k] = v; n++; } // Apple Health sends: never twice
   if (!n) return 0;
@@ -256,6 +257,14 @@ const liftBlocks = () => data.program.blocks.filter(b => b.type !== 'cardio');
 const cardioBlocks = () => data.program.blocks.filter(b => b.type === 'cardio');
 const allExercises = () => liftBlocks().flatMap(b => b.exercises);
 const sidesOf = (e) => e.perSide ? ['L', 'R'] : ['B'];
+// Exercises added to one day on top of (or instead of) the plan. Each keeps its own settings on that day.
+const dayExtras = (rec) => rec?.extraEx || [];
+const extraLifts = (rec) => dayExtras(rec).filter(x => x.kind !== 'cardio');
+const extraCardio = (rec) => dayExtras(rec).filter(x => x.kind === 'cardio');
+const planCardio = () => cardioBlocks().flatMap(b => b.items);
+const cardioItems = (rec) => [...planCardio(), ...extraCardio(rec)];
+const dayLifts = (rec) => [...allExercises(), ...extraLifts(rec)];
+const findLift = (id, rec) => dayLifts(rec).find(x => x.id === id);
 const SIDE_LABEL = { L: 'Left', R: 'Right', B: 'Both' };
 
 function getDay(date) {
@@ -275,14 +284,20 @@ function setCell(date, exId, i, side, patch) {
 }
 
 function progress(rec) {
+  // "Skip the plan today" (or a rest day with its own workout) counts only what you added.
   let total = 0, done = 0, sidesDone = 0;
-  for (const e of allExercises()) {
+  const planOn = !rec?.planOff;
+  for (const [e, counts] of [...allExercises().map(e => [e, planOn]), ...extraLifts(rec).map(e => [e, true])]) {
     for (let i = 0; i < e.sets; i++) for (const s of sidesOf(e)) {
-      total++;
-      if (cell(rec, e.id, i, s)?.c) { done++; sidesDone++; }
+      const c = !!cell(rec, e.id, i, s)?.c;
+      if (c) sidesDone++;
+      if (counts) { total++; if (c) done++; }
     }
   }
-  for (const b of cardioBlocks()) for (const it of b.items) { total++; if (rec?.cardio?.[it.id]?.done) done++; }
+  for (const [it, counts] of [...planCardio().map(it => [it, planOn]), ...extraCardio(rec).map(it => [it, true])]) {
+    if (!counts) continue;
+    total++; if (rec?.cardio?.[it.id]?.done) done++;
+  }
   return { total, done, pct: total ? done / total : 0, sidesDone };
 }
 function exProgress(rec, e) {
@@ -520,10 +535,150 @@ function openFoodEditor(f, opts = {}) {
     root.querySelector(f ? 'input[name="kcal"]' : 'input[name="name"]')?.focus();
   });
 }
+// ----- Exercise library: your own exercises (data.exercises) plus the built-in list (exercises.js) -----
+const libExercises = () => [...(data.exercises || []).map(x => ({ ...x, mine: true })), ...(window.EXERCISE_DB || [])];
+const libExercise = (id) => libExercises().find(x => x.id === id);
+// Every added exercise that has ever been logged, so Progress and the workbook can show it.
+const knownExtraLifts = () => memoize('extraLifts', () => {
+  const m = new Map();
+  for (const d of Object.keys(data.days).sort()) for (const e of extraLifts(data.days[d])) m.set(e.id, e);
+  return [...m.values()].filter(e => !allExercises().some(p => p.id === e.id));
+});
+// Added lifts with logged weights, for Progress (timed holds have no weight to track).
+const trackedExtraLifts = () => knownExtraLifts().filter(e => e.unit !== 'sec' && sessionsOf(e.id, addDays(todayStr(), 1), 1).length);
+const exLine = (x) => x.kind === 'cardio'
+  ? `${x.group}, ${x.minMin}–${x.maxMin} min, about ${num(x.met * 3.5 * ((latestWeight(todayStr()) || 170) / 2.20462) / 200 * 10)} kcal per 10 min`
+  : `${x.group}${x.equip ? ', ' + x.equip.toLowerCase() : ''}, ${x.sets} × ${x.repMin}${x.repMax && x.repMax !== x.repMin ? '–' + x.repMax : ''} ${x.unit === 'sec' ? 'sec' : 'reps'}${x.perSide ? ' per side' : ''}`;
+function searchExercises(q, group, limit = 10) {
+  const words = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const scored = [];
+  for (const x of libExercises()) {
+    if (group && x.group !== group) continue;
+    const name = x.name.toLowerCase(), hay = `${name} ${x.group} ${x.equip || ''}`.toLowerCase();
+    if (!words.every(w => hay.includes(w))) continue;
+    let sc = 0;
+    if (words.length && name.startsWith(words[0])) sc += 3;
+    else if (words.length && name.split(/[\s(,/-]+/).some(t => t.startsWith(words[0]))) sc += 2;
+    if (x.mine) sc += 2.5;
+    scored.push([sc - name.length / 100, x]);
+  }
+  if (!words.length) return scored.map(s => s[1]).slice(0, group ? 60 : limit);
+  return scored.sort((a, b) => b[0] - a[0]).slice(0, limit).map(s => s[1]);
+}
+function recentExercises(limit = 8) {
+  const out = [], seen = new Set();
+  for (let i = 0; i < 90 && out.length < limit; i++) {
+    for (const x of [...dayExtras(data.days[addDays(todayStr(), -i)])].reverse()) {
+      if (seen.has(x.id)) continue;
+      seen.add(x.id); out.push(libExercise(x.id) || x);
+      if (out.length >= limit) break;
+    }
+  }
+  for (const x of data.exercises || []) { if (out.length >= limit) break; if (!seen.has(x.id)) { seen.add(x.id); out.push({ ...x, mine: true }); } }
+  return out;
+}
+function addExtra(date, x) {
+  const rec = getDay(date);
+  rec.extraEx ||= [];
+  if (rec.extraEx.some(e => e.id === x.id) || (!rec.planOff && dayLifts(rec).some(e => e.id === x.id))) return false;
+  const keep = ['id', 'name', 'kind', 'group', 'equip', 'sets', 'repMin', 'repMax', 'perSide', 'drop', 'wMin', 'unit', 'met', 'minMin', 'maxMin'];
+  const def = Object.fromEntries(keep.filter(k => x[k] !== undefined).map(k => [k, x[k]]));
+  // Start from what you did last time with this exercise.
+  if (def.kind !== 'cardio') { const last = [...lastExtraDefs(x.id)][0]; if (last) Object.assign(def, { sets: last.sets, perSide: last.perSide }); }
+  rec.extraEx.push(def);
+  // Not a training day: the plan isn't on today, so only what you add counts.
+  if (sched(date).kind !== 'train') rec.planOff = true;
+  ui.open[date + ':' + x.id] = true;
+  return true;
+}
+function* lastExtraDefs(id) {
+  const ds = loggedDates();
+  for (let i = ds.length - 1; i >= 0; i--) { const e = dayExtras(data.days[ds[i]]).find(x => x.id === id); if (e) yield e; }
+}
+function exResults(q, group) {
+  q = String(q || '').trim();
+  const groups = window.EXERCISE_GROUPS || [];
+  const chips = `<div class="ex-groups">${['', ...groups].map(g => `<button class="chip ${(ui.exGroup || '') === g ? 'chip-on' : ''}" data-action="ex-group" data-g="${esc(g)}">${g ? esc(g) : 'All'}</button>`).join('')}</div>`;
+  if (!q && !group) {
+    const rec = recentExercises();
+    return chips + (rec.length ? `<div class="food-recent"><span>Recent</span>${rec.map(x => `<button class="chip" data-action="add-extra" data-xid="${x.id}" title="${esc(exLine(x))}">${esc(x.name)}</button>`).join('')}</div>`
+      : `<p class="hint food-hint">Search ${(window.EXERCISE_DB || []).length}+ exercises and activities, pick a muscle group, or create your own.</p>`);
+  }
+  let hits = searchExercises(q, group), widened = false;
+  if (!hits.length && group && q) { hits = searchExercises(q, ''); widened = hits.length > 0; }
+  return chips + (widened ? `<p class="hint food-hint">Nothing in ${esc(group)}. Showing all groups.</p>` : '') + `<div class="food-hits ex-hits">${hits.map((x, i) => `<div class="food-hit ${i === 0 && q ? 'first' : ''}">
+      <button class="hit-main" data-action="add-extra" data-xid="${x.id}"><b>${esc(x.name)}${x.mine ? '<span class="tag">Yours</span>' : ''}</b><small>${esc(exLine(x))}</small></button>
+      <button class="icon-btn sm" data-action="edit-libex" data-xid="${x.id}" aria-label="${x.mine ? 'Edit' : 'Change and save'} ${esc(x.name)}" title="${x.mine ? 'Edit' : 'Change it, then save to My exercises'}">${ICON.edit}</button>
+    </div>`).join('') || '<p class="hint food-hint">Nothing matches. Create it below.</p>'}
+    <button class="food-hit create" data-action="new-ex"><b>Create ${q ? `"${esc(q)}"` : 'an exercise'}</b><small>Strength with sets and reps, or cardio and sports by the minute</small></button></div>`;
+}
+function refreshExResults() { const r = $('#ex-results'); if (r) r.innerHTML = exResults(ui.exQ, ui.exGroup); }
+
+const INTENSITY = [[3, 'Light (easy walk, stretching)'], [5, 'Moderate (brisk walk, easy bike)'], [7, 'Hard (jog, sports, circuits)'], [10, 'Very hard (running fast, sparring)']];
+// Create or edit an exercise. opts: { addTo: date to also add it to, name }
+function openExerciseEditor(x, opts = {}) {
+  const mine = !!(x && x.mine);
+  const v = x || { name: opts.name || '', kind: 'lift', group: 'Chest', sets: 3, repMin: 8, repMax: 12, perSide: false, met: 5, minMin: 20, maxMin: 45 };
+  const groups = window.EXERCISE_GROUPS || [];
+  const title = mine ? `Edit ${esc(v.name)}` : x ? `Save ${esc(v.name)} as your own` : 'Create an exercise';
+  const metClose = INTENSITY.reduce((a, b) => Math.abs(b[0] - (v.met || 5)) < Math.abs(a[0] - (v.met || 5)) ? b : a)[0];
+  openModal(`<h2>${title}</h2>
+    <form class="food-editor ex-editor" data-form="ex-editor">
+      <div class="seg" role="radiogroup" aria-label="Type">
+        <label><input type="radio" name="kind" value="lift" ${v.kind !== 'cardio' ? 'checked' : ''}><span>Strength (sets and reps)</span></label>
+        <label><input type="radio" name="kind" value="cardio" ${v.kind === 'cardio' ? 'checked' : ''}><span>Cardio or sport (minutes)</span></label>
+      </div>
+      <div class="fe-grid">
+        <label class="field fe-name"><span>Name</span><input name="name" required value="${esc(v.name)}" placeholder="Cable lateral raise"></label>
+        <label class="field"><span>Group</span><select name="group">${groups.map(g => `<option ${g === v.group ? 'selected' : ''}>${esc(g)}</option>`).join('')}</select></label>
+      </div>
+      <div class="fe-grid only-lift">
+        <label class="field"><span>Sets</span><input type="number" name="sets" min="1" max="10" value="${v.sets ?? 3}"></label>
+        <label class="field"><span>Reps, low</span><input type="number" name="repMin" min="1" value="${v.repMin ?? 8}"></label>
+        <label class="field"><span>Reps, high</span><input type="number" name="repMax" min="1" value="${v.repMax ?? 12}"></label>
+        <label class="field"><span>Starting weight (lb)</span><input type="number" name="wMin" min="0" step="2.5" value="${v.wMin ?? ''}" placeholder="optional"></label>
+        <label class="check-opt fe-side"><input type="checkbox" name="perSide" ${v.perSide ? 'checked' : ''}><span>One side at a time (log left and right)</span></label>
+        <label class="check-opt fe-side"><input type="checkbox" name="secs" ${v.unit === 'sec' ? 'checked' : ''}><span>Timed hold (seconds instead of reps)</span></label>
+      </div>
+      <div class="fe-grid only-cardio">
+        <label class="field fe-name"><span>Effort</span><select name="met">${INTENSITY.map(([m, l]) => `<option value="${m}" ${m === metClose ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+        <label class="field"><span>Usual minutes</span><input type="number" name="maxMin" min="1" value="${v.maxMin ?? 45}"></label>
+      </div>
+      ${opts.addTo ? `<label class="check-opt"><input type="checkbox" name="add" checked><span>Add to ${opts.addTo === todayStr() ? 'today' : esc(longDate(opts.addTo, { month: 'short', day: 'numeric' }))}</span></label>` : ''}
+      ${!mine && opts.addTo ? `<label class="check-opt"><input type="checkbox" name="keep" checked><span>Save to My exercises for next time</span></label>` : ''}
+      <div class="modal-actions">${mine ? `<button type="button" class="btn btn-ghost danger" data-del-ex>Delete</button><span class="spacer"></span>` : ''}<button type="button" class="btn btn-ghost" data-close>Cancel</button><button class="btn" type="submit">${mine ? 'Save' : opts.addTo ? 'Add' : 'Save exercise'}</button></div>
+    </form>`, (root, close) => {
+    const form = root.querySelector('form');
+    const sync = () => form.dataset.kind = form.querySelector('input[name="kind"]:checked').value;
+    form.addEventListener('change', sync); sync();
+    root.querySelector('[data-del-ex]')?.addEventListener('click', (e) => {
+      if (!confirmInline(e.currentTarget)) return;
+      data.exercises = data.exercises.filter(y => y.id !== x.id); save(); close(); render(); toast(`Deleted ${v.name}`);
+    });
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const fd = new FormData(form), kind = fd.get('kind');
+      const name = String(fd.get('name')).trim(); if (!name) return;
+      const item = kind === 'cardio'
+        ? { name, kind, group: fd.get('group'), met: +fd.get('met') || 5, minMin: Math.max(5, Math.round((+fd.get('maxMin') || 30) / 2)), maxMin: +fd.get('maxMin') || 30 }
+        : { name, kind: 'lift', group: fd.get('group'), sets: clamp(+fd.get('sets') || 3, 1, 10), repMin: +fd.get('repMin') || 8, repMax: Math.max(+fd.get('repMax') || 12, +fd.get('repMin') || 8), perSide: !!fd.get('perSide'), drop: false, unit: fd.get('secs') ? 'sec' : 'reps', ...(fd.get('wMin') ? { wMin: +fd.get('wMin') } : {}) };
+      let saved = null;
+      if (mine) { saved = data.exercises.find(y => y.id === x.id); for (const k of ['sets', 'repMin', 'repMax', 'perSide', 'wMin', 'unit', 'met', 'minMin', 'maxMin', 'drop']) delete saved[k]; Object.assign(saved, item); }
+      else if (!opts.addTo || fd.get('keep')) { saved = { id: 'x-' + uid(), ...item }; (data.exercises ||= []).push(saved); }
+      let added = false;
+      if (opts.addTo && fd.get('add')) added = addExtra(opts.addTo, saved || { id: 'x-' + uid(), ...item });
+      ui.exQ = '';
+      save(); close(); render();
+      toast(added ? `Added ${name}${saved && !mine ? ', and saved it to My exercises' : ''}` : mine ? 'Saved' : `Saved ${name} to My exercises`);
+    });
+    root.querySelector(x ? 'input[name="sets"]' : 'input[name="name"]')?.focus();
+  });
+}
+
 // Drop sets: only the last set of an exercise has one.
 function dropsDone(rec) {
   let n = 0;
-  for (const e of allExercises()) {
+  for (const e of dayLifts(rec)) {
     if (!e.drop) continue;
     for (const side of sidesOf(e)) if (cell(rec, e.id, e.sets - 1, side)?.d) n++;
   }
@@ -545,7 +700,7 @@ function calories(date) {
   const lift = liftEnergy(rec, date);
   const liftK = lift.kcal;
   let cardioK = 0;
-  for (const b of cardioBlocks()) for (const it of b.items) cardioK += (+rec?.cardio?.[it.id]?.min || 0) * kcalPerMin(it.met || 6, date);
+  for (const it of cardioItems(rec)) cardioK += (+rec?.cardio?.[it.id]?.min || 0) * kcalPerMin(it.met || 6, date);
   const b = bmr(date);
   let out = null, basis = '';
   if (rec?.outOverride) { out = +rec.outOverride; basis = 'Entered by you'; }
@@ -718,6 +873,9 @@ function weeklyVolume(weeks = 12) {
     for (const b of liftBlocks()) for (const e of b.exercises) for (const row of data.days[d].sets?.[e.id] || []) if (row) for (const c of Object.values(row)) {
       if (c?.c && +c.w > 0) out[wi].by[b.id] = (out[wi].by[b.id] || 0) + (+c.r || 0) * +c.w;
     }
+    for (const e of extraLifts(data.days[d])) for (const row of data.days[d].sets?.[e.id] || []) if (row) for (const c of Object.values(row)) {
+      if (c?.c && +c.w > 0) out[wi].by.extra = (out[wi].by.extra || 0) + (+c.r || 0) * +c.w;
+    }
   }
   return out;
 }
@@ -810,7 +968,8 @@ function viewToday() {
   else if (sc.kind === 'off') sub = `No training scheduled. You're back on ${longDate(addDays(sc.until, 1), { weekday: 'long', month: 'long', day: 'numeric' })}, starting at Day 1.`;
   else if (sc.kind === 'rest') sub = 'Rest day. Eat well, sleep well, come back for Day 1 tomorrow.';
   else if (sc.kind === 'before') sub = 'Your plan starts on ' + longDate(data.settings.startDate) + '.';
-  else sub = `Training: ${blocksTitle}, then ${cardioBlocks().flatMap(b => b.items).map(i => i.name).join(', ')}.`;
+  else if (rec?.planOff) sub = `Your own workout today: ${dayExtras(rec).map(x => x.name).join(', ') || 'add exercises below'}.`;
+  else sub = `Training: ${blocksTitle}, then ${cardioBlocks().flatMap(b => b.items).map(i => i.name).join(', ')}.${dayExtras(rec).length ? ` Plus ${dayExtras(rec).map(x => x.name).join(', ')}.` : ''}`;
 
   const statusPill = {
     done: '<span class="pill ok">Workout done</span>', extra: '<span class="pill ok">Bonus session</span>',
@@ -938,9 +1097,11 @@ function nudge(date, sc, p) {
 
 function workoutSection(date, sc, rec, p, isFuture, isPast) {
   let pre = '';
+  const extras = dayExtras(rec);
+  const adder = isFuture ? '' : exAdder(date, sc, rec);
   if (sc.status === 'missed') {
     pre = missCard(date, rec);
-  } else if (sc.kind === 'rest' && !hasActivity(rec)) {
+  } else if (sc.kind === 'rest' && !hasActivity(rec) && !extras.length) {
     return `
       <div class="rest-card">
         <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M40 10a22 22 0 1 0 14 38A24 24 0 0 1 40 10Z"/></svg>
@@ -949,8 +1110,8 @@ function workoutSection(date, sc, rec, p, isFuture, isPast) {
           <p>Day ${sc.day} of ${data.settings.cycle.length}. Recovery is where the growth happens. Hit your food and protein today.</p>
           ${date === todayStr() ? `<div class="row-gap"><button class="btn" data-action="train-anyway">Train today instead</button><span class="hint">Restarts your cycle at Day 1 today.</span></div>` : ''}
         </div>
-      </div>`;
-  } else if (sc.kind === 'off' && !hasActivity(rec)) {
+      </div>${adder}`;
+  } else if (sc.kind === 'off' && !hasActivity(rec) && !extras.length) {
     const left = diffDays(date, sc.until) + 1;
     return `
       <div class="rest-card off-card">
@@ -961,13 +1122,17 @@ function workoutSection(date, sc, rec, p, isFuture, isPast) {
           <div class="row-gap"><button class="btn btn-small" data-action="edit-breaks">Edit time off</button></div>
         </div>
       </div>
-      ${recoveryCard(date, sc)}`;
+      ${recoveryCard(date, sc)}${adder}`;
   } else if (sc.kind === 'before') {
     return `<div class="rest-card"><div><h2>Before your plan</h2><p>Your plan starts ${esc(longDate(data.settings.startDate))}. Change the start date in Settings.</p></div></div>`;
   }
   if (isFuture) pre += `<div class="preview-note">Preview of Day ${sc.day}. You can check things off on the day.</div>`;
+  if (sc.kind === 'off') pre = recoveryCard(date, sc) + pre;
 
-  const blocks = data.program.blocks.map((b, bi) => b.type === 'cardio' ? cardioBlock(date, b, bi, rec) : liftBlock(date, b, bi, rec)).join('');
+  const planBlocks = data.program.blocks.map((b, bi) => b.type === 'cardio' ? cardioBlock(date, b, bi, rec) : liftBlock(date, b, bi, rec)).join('');
+  const blocks = (rec?.planOff
+    ? (sc.kind === 'train' ? `<div class="plan-off-note"><p><b>Plan skipped today.</b> Only what you added below counts toward today.</p><button class="btn btn-ghost btn-small" data-action="plan-on">Bring back the plan</button></div>` : '')
+    : planBlocks) + (extras.length ? extraBlock(date, rec, sc) : '');
   const done = rec?.done;
   const finish = isFuture ? '' : `
     <div class="finish">
@@ -981,7 +1146,40 @@ function workoutSection(date, sc, rec, p, isFuture, isPast) {
         ${date === todayStr() && sc.status === 'today' && !p.done ? `<button class="btn btn-ghost btn-small" data-action="skip-today">Skip today</button>` : ''}
       </div>
     </div>`;
-  return pre + `<div class="blocks ${isFuture ? 'readonly' : ''}">${blocks}</div>` + finish;
+  return pre + `<div class="blocks ${isFuture ? 'readonly' : ''}">${blocks}</div>` + adder + finish;
+}
+
+// ---------- Exercises added to one day ----------
+function extraBlock(date, rec, sc) {
+  const ex = dayExtras(rec);
+  let t = 0, d = 0;
+  for (const e of ex) { if (e.kind === 'cardio') { t++; if (rec?.cardio?.[e.id]?.done) d++; } else { const p = exProgress(rec, e); t += p.t; d += p.d; } }
+  const own = rec?.planOff || sc.kind !== 'train';
+  return `
+  <section class="block hue-extra ${t && d === t ? 'all-done' : ''}" id="block-extra">
+    <header class="block-head">
+      <span class="block-num">+</span>
+      <div class="block-name"><h2>${own ? 'Your workout' : 'Added today'}</h2><small>${ex.length} ${ex.length === 1 ? 'exercise' : 'exercises'}${sc.kind === 'train' && !rec?.planOff ? `<span class="sep" aria-hidden="true">·</span><button class="link-btn inline" data-action="plan-off">Skip the plan today</button>` : ''}</small></div>
+      <div class="block-bar" aria-label="${d} of ${t}"><span style="width:${t ? d / t * 100 : 0}%"></span></div>
+      <span class="block-count">${d}/${t}</span>
+    </header>
+    <div class="block-body">${ex.map(e => e.kind === 'cardio' ? cardioItem(date, e, rec, true) : exerciseRow(date, e, rec, true)).join('')}</div>
+  </section>`;
+}
+function exAdder(date, sc, rec) {
+  const open = ui.exAdderOpen === date;
+  const restish = sc.kind !== 'train' && !dayExtras(rec).length;
+  if (!open) return restish
+    ? `<div class="ex-adder-cta"><button class="btn" data-action="show-adder">Log a different workout</button><span class="hint">Lifting, cardio or a sport. It counts for today without changing your cycle.</span></div>`
+    : `<button class="add-ex-btn" data-action="show-adder">+ Add an exercise or activity</button>`;
+  return `<section class="card ex-adder">
+    <header class="card-head"><h2>${dayExtras(rec).length || sc.kind === 'train' ? 'Add to this workout' : 'Log a different workout'}</h2><button class="icon-btn sm" data-action="hide-adder" aria-label="Close">${ICON.x}</button></header>
+    <div class="food-add">
+      <label class="food-search">${ICON.search}<input type="search" data-input="ex-search" value="${esc(ui.exQ || '')}" placeholder="Search exercises, cardio, sports" aria-label="Search exercises" autocomplete="off"></label>
+      <button class="btn btn-small btn-ghost" data-action="new-ex" title="Create your own exercise">+ New</button>
+    </div>
+    <div class="ex-results" id="ex-results">${exResults(ui.exQ, ui.exGroup)}</div>
+  </section>`;
 }
 
 // ---------- Recovery checklist (time off) ----------
@@ -1048,7 +1246,7 @@ function liftBlock(date, b, bi, rec) {
   </section>`;
 }
 
-function exerciseRow(date, e, rec) {
+function exerciseRow(date, e, rec, extra = false) {
   const p = exProgress(rec, e);
   const complete = p.d === p.t;
   const key = date + ':' + e.id;
@@ -1057,7 +1255,7 @@ function exerciseRow(date, e, rec) {
   const lastTxt = last ? (() => { const s = sessionTop(last.sets); return `Last time (${shortDate(last.date)}): ${s.top ? s.top + ' lb, ' : ''}${s.reps.join(' / ')} reps`; })() : '';
   const meta = [
     `${e.sets} sets`,
-    `${e.repMin}${e.repMax && e.repMax !== e.repMin ? '–' + e.repMax : ''} reps${e.perSide ? ' per side' : ''}`,
+    `${e.repMin}${e.repMax && e.repMax !== e.repMin ? '–' + e.repMax : ''} ${e.unit === 'sec' ? 'sec' : 'reps'}${e.perSide ? ' per side' : ''}`,
     e.wMin ? `${e.wMin}${e.wMax && e.wMax !== e.wMin ? '–' + e.wMax : ''} lb` : null,
     e.drop ? 'dropset on the last set' : null,
   ].filter(Boolean).join(', ');
@@ -1080,6 +1278,7 @@ function exerciseRow(date, e, rec) {
     <div class="ex-body">
       ${lastTxt || progressChip(e, date) ? `<div class="last-row">${lastTxt ? `<p class="last">${esc(lastTxt)}</p>` : ''}${progressChip(e, date)}</div>` : ''}
       ${rows}
+      ${extra ? `<div class="extra-tools"><span>Sets</span><span class="qty"><button data-action="extra-sets" data-ex="${e.id}" data-d="-1" aria-label="One fewer set">−</button><b>${e.sets}</b><button data-action="extra-sets" data-ex="${e.id}" data-d="1" aria-label="One more set">+</button></span><button class="link-btn danger" data-action="del-extra" data-ex="${e.id}">Remove from today</button></div>` : ''}
       <div class="ex-note">
         ${noteOpen
           ? `<textarea rows="2" data-input="ex-note" data-ex="${e.id}" placeholder="Note for this exercise">${esc(note)}</textarea>`
@@ -1098,11 +1297,13 @@ function sideRow(date, e, i, side, rec) {
     dots += `<button class="rep ${k <= c.r ? 'on' : ''} ${inRange ? 'zone' : ''}" data-action="rep" data-n="${k}" aria-label="${k} reps" tabindex="${k === 1 ? 0 : -1}"></button>`;
   }
   const ph = suggestWeight(e, date, i, side);
+  const secs = e.unit === 'sec';
   return `
-  <div class="side ${c.c ? 'checked' : ''}" data-ex="${e.id}" data-set="${i}" data-side="${side}">
+  <div class="side ${c.c ? 'checked' : ''} ${secs ? 'timed' : ''}" data-ex="${e.id}" data-set="${i}" data-side="${side}">
     <span class="side-tag">${SIDE_LABEL[side]}</span>
-    <div class="reps" role="group" aria-label="Reps">${dots}<button class="rep-more" data-action="rep-more" aria-label="Add a rep">+</button></div>
-    <span class="rep-num">${c.r || 0}</span>
+    ${secs ? `<label class="wt secs"><input type="number" inputmode="numeric" min="0" step="5" value="${c.r || ''}" placeholder="${e.repMin}–${e.repMax}" data-input="secs" aria-label="Seconds"><span>sec</span></label><span class="rep-num"></span>`
+      : `<div class="reps" role="group" aria-label="Reps">${dots}<button class="rep-more" data-action="rep-more" aria-label="Add a rep">+</button></div>
+    <span class="rep-num">${c.r || 0}</span>`}
     <label class="wt"><input type="number" inputmode="decimal" min="0" step="2.5" value="${c.w ?? ''}" placeholder="${ph}" data-input="weight" aria-label="Weight in pounds"><span>lb</span></label>
     ${e.drop ? (i === e.sets - 1 ? `<button class="drop ${c.d ? 'on' : ''}" data-action="drop" title="Drop set to failure done (about ${num((data.settings.dropMin ?? 0.5) * kcalPerMin(data.settings.dropMet ?? 6, date))} extra kcal)">Drop</button>` : '<span class="drop drop-spacer" aria-hidden="true">Drop</span>') : ''}
     <button class="check ${c.c ? 'on' : ''}" data-action="check" aria-label="Mark ${SIDE_LABEL[side].toLowerCase()} side done">${ICON.check}</button>
@@ -1110,7 +1311,21 @@ function sideRow(date, e, i, side, rec) {
 }
 
 function cardioBlock(date, b, bi, rec) {
-  const items = b.items.map(it => {
+  const items = b.items.map(it => cardioItem(date, it, rec)).join('');
+  const total = b.items.length, d = b.items.filter(it => rec?.cardio?.[it.id]?.done).length;
+  return `
+  <section class="block hue-saber ${total && d === total ? 'all-done' : ''}" id="block-${b.id}">
+    <header class="block-head">
+      <span class="block-num">${bi + 1}</span>
+      <div class="block-name"><h2>${esc(b.name)}</h2><small>Block ${bi + 1}</small></div>
+      <div class="block-bar"><span style="width:${total ? d / total * 100 : 0}%"></span></div>
+      <span class="block-count">${d}/${total}</span>
+    </header>
+    <div class="block-body">${items}</div>
+  </section>`;
+}
+function cardioItem(date, it, rec, extra = false) {
+  {
     const c = rec?.cardio?.[it.id] || {};
     const k = (+c.min || 0) * kcalPerMin(it.met || 6, date);
     const quick = [it.minMin, Math.round((it.minMin + it.maxMin) / 2), it.maxMin].filter((v, i, a) => v && a.indexOf(v) === i);
@@ -1125,20 +1340,10 @@ function cardioBlock(date, b, bi, rec) {
         <label class="wt"><input type="number" min="0" step="5" value="${c.min || ''}" placeholder="0" data-input="cardio-min" aria-label="Minutes"><span>min</span></label>
         <span class="kcal-est">${k ? '≈ ' + num(k) + ' kcal' : ''}</span>
         <button class="check ${c.done ? 'on' : ''}" data-action="cardio-done" aria-label="Mark done">${ICON.check}</button>
+        ${extra ? `<button class="icon-btn sm" data-action="del-extra" data-ex="${it.id}" aria-label="Remove ${esc(it.name)} from today">${ICON.x}</button>` : ''}
       </div>
     </div>`;
-  }).join('');
-  const total = b.items.length, d = b.items.filter(it => rec?.cardio?.[it.id]?.done).length;
-  return `
-  <section class="block hue-saber ${total && d === total ? 'all-done' : ''}" id="block-${b.id}">
-    <header class="block-head">
-      <span class="block-num">${bi + 1}</span>
-      <div class="block-name"><h2>${esc(b.name)}</h2><small>Block ${bi + 1}</small></div>
-      <div class="block-bar"><span style="width:${total ? d / total * 100 : 0}%"></span></div>
-      <span class="block-count">${d}/${total}</span>
-    </header>
-    <div class="block-body">${items}</div>
-  </section>`;
+  }
 }
 
 function caloriesCard(date, cal) {
@@ -1436,7 +1641,7 @@ function viewCalendar() {
 // Progress view (charts)
 // ======================================================================
 function viewProgress() {
-  const opts = allExercises().map(e => `<option value="${e.id}" ${e.id === ui.progEx ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
+  const opts = [...allExercises(), ...trackedExtraLifts()].map(e => `<option value="${e.id}" ${e.id === ui.progEx ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
   const sessions = exSessions(ui.progEx);
   const best = sessions.reduce((a, s) => s.top > (a?.top || 0) ? s : a, null);
   const ranges = [[30, '30 days'], [90, '90 days'], [365, '1 year'], [0, 'All']];
@@ -1479,7 +1684,7 @@ function viewProgress() {
 }
 function liftsTable() {
   const t = addDays(todayStr(), 1);
-  const rows = liftBlocks().flatMap(b => b.exercises.map(e => {
+  const rows = [...liftBlocks(), { hue: 'extra', exercises: trackedExtraLifts() }].flatMap(b => b.exercises.map(e => {
     const p = progression(e, t);
     const status = !p ? '<span class="prog-chip none">No weights logged yet</span>'
       : p.kind === 'up' ? `<span class="prog-chip up">Ready: ${p.to} lb next time</span>`
@@ -1493,7 +1698,7 @@ function liftsTable() {
   return `<table class="lifts"><thead><tr><th>Exercise</th><th>Working weight</th><th>Last reps</th><th>Est. max</th><th>Range</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 function balanceTable() {
-  const rows = allExercises().map(e => ({ e, b: sideBalance(e) })).filter(x => x.b);
+  const rows = [...allExercises(), ...trackedExtraLifts()].map(e => ({ e, b: sideBalance(e) })).filter(x => x.b);
   if (!rows.length) return '<p class="empty-msg">Log a few sessions with weights on both sides to compare them.</p>';
   return `<table class="lifts"><thead><tr><th>Exercise</th><th>Left</th><th>Right</th><th></th></tr></thead><tbody>${rows.map(({ e, b }) => `<tr><td>${esc(e.name)}</td><td>${b.L}</td><td>${b.R}</td><td>${b.weaker ? `<span class="prog-chip stuck">${b.weaker} ${Math.round(Math.abs(b.diff) * 100)}% fewer reps</span>` : '<span class="prog-chip up-soft">Balanced</span>'}</td></tr>`).join('')}</tbody></table><p class="hint">Average reps per set. A gap over 8% is flagged; leading each set with the weaker side is a common fix.</p>`;
 }
@@ -1518,7 +1723,9 @@ function hydrateCharts() {
     { name: 'Trend', color: 'var(--primary)', points: weights.length > 1 ? trend : [], noDots: true },
   ], { unit: 'lb', empty: 'Log your weight on the Today page or above.' });
   const vol = weeklyVolume(ui.range && ui.range <= 30 ? 6 : 12);
-  drawBars($('[data-chart="volume"]'), vol.map(v => shortDate(v.week)), liftBlocks().map(b => ({ name: b.name, color: `var(--${({ b1: 'blue', b2: 'red', b3: 'yellow' })[b.hue] || 'green'})`, values: vol.map(v => Math.round(v.by[b.id] || 0)) })), { unit: 'lb', empty: 'Log sets with weights to see weekly volume.' });
+  const volSeries = liftBlocks().map(b => ({ name: b.name, color: `var(--${({ b1: 'blue', b2: 'red', b3: 'yellow' })[b.hue] || 'green'})`, values: vol.map(v => Math.round(v.by[b.id] || 0)) }));
+  if (vol.some(v => v.by.extra)) volSeries.push({ name: 'Added exercises', color: 'var(--cyan)', values: vol.map(v => Math.round(v.by.extra || 0)) });
+  drawBars($('[data-chart="volume"]'), vol.map(v => shortDate(v.week)), volSeries, { unit: 'lb', empty: 'Log sets with weights to see weekly volume.' });
   const ses = exSessions(ui.progEx);
   drawChart($('[data-chart="strength"]'), [
     { name: 'Top weight', color: 'var(--red)', points: ses.filter(s => s.top).map(s => ({ x: s.date, y: s.top })) },
@@ -1809,7 +2016,7 @@ function viewHistory() {
     const brk = s.kind === 'off' ? (data.settings.breaks || []).find(b => b.id === s.breakId) : null;
     const rehabTotal = brk ? (brk.items || []).reduce((a, it) => a + (+it.times || 1), 0) : 0;
     const rehabDone = brk ? (brk.items || []).reduce((a, it) => a + Math.min(+rec?.rehab?.[it.id] || 0, +it.times || 1), 0) : 0;
-    const notes = [rec?.rehabNote, rec?.note, ...Object.entries(rec?.exNotes || {}).filter(([, v]) => v).map(([k, v]) => `${allExercises().find(e => e.id === k)?.name || k}: ${v}`), rec?.miss?.note].filter(Boolean);
+    const notes = [rec?.rehabNote, rec?.note, ...Object.entries(rec?.exNotes || {}).filter(([, v]) => v).map(([k, v]) => `${findLift(k, rec)?.name || k}: ${v}`), rec?.miss?.note].filter(Boolean);
     const status = { done: 'Done', extra: 'Bonus', missed: 'Missed', rest: 'Rest', today: 'Today', off: 'Time off' }[s.status] || s.status;
     return `<button class="hist-row" data-action="open-day" data-date="${d}">
       <span class="h-date"><b>${esc(longDate(d, { weekday: 'short', month: 'short', day: 'numeric' }))}</b><small>${s.kind === 'rest' ? 'Rest day' : s.kind === 'off' ? esc(s.label) : 'Day ' + s.day}</small></span>
@@ -1888,6 +2095,11 @@ function viewSettings() {
     <section class="card" id="health-card">${healthCard()}</section>
 
     <section class="card"><header class="card-head"><h2>Workout plan</h2><label class="field inline-field"><span>Weight jump</span><span class="wt"><input type="number" step="2.5" min="1" data-set="weightStep" value="${+s.weightStep || 5}"><span>lb</span></span></label></header>${progEditor}</section>
+    <section class="card my-foods my-ex"><header class="card-head"><h2>My exercises</h2><button class="btn btn-small btn-ghost" data-action="new-ex">Create exercise</button></header>
+      <p class="hint">Exercises and activities you created. Add any of them, or anything from the built-in list of ${(window.EXERCISE_DB || []).length}, to a day from "Add an exercise or activity" on Today.</p>
+      ${(data.exercises || []).length ? `<ul class="myfood-list">${[...data.exercises].sort((a, b) => a.name.localeCompare(b.name)).map(x => `<li><span><b>${esc(x.name)}</b><small>${esc(exLine(x))}</small></span><button class="icon-btn sm" data-action="edit-myex" data-xid="${x.id}" aria-label="Edit ${esc(x.name)}">${ICON.edit}</button></li>`).join('')}</ul>` : '<p class="hint">Nothing saved yet.</p>'}
+    </section>
+
     <section class="card my-foods"><header class="card-head"><h2>My foods</h2><button class="btn btn-small btn-ghost" data-action="new-food">Create food</button></header>
       <p class="hint">Foods you saved. They show up first when you search under Extras on Today. Edit one to fix its label numbers.</p>
       ${(data.foods || []).length ? `<ul class="myfood-list">${[...data.foods].sort((a, b) => a.name.localeCompare(b.name)).map(f => `<li><span><b>${esc(f.name)}</b><small>${foodLine(f)}</small></span><button class="icon-btn sm" data-action="edit-myfood" data-fid="${f.id}" aria-label="Edit ${esc(f.name)}">${ICON.edit}</button></li>`).join('')}</ul>` : '<p class="hint">Nothing saved yet. Create a food, or search under Extras on Today and tap the pencil to save one.</p>'}
@@ -2033,7 +2245,7 @@ document.addEventListener('click', async (e) => {
   const date = ui.date;
   const side = a.closest('.side');
   const ctx = side ? { exId: side.dataset.ex, i: +side.dataset.set, s: side.dataset.side } : null;
-  const exDef = ctx ? allExercises().find(x => x.id === ctx.exId) : null;
+  const exDef = ctx ? findLift(ctx.exId, data.days[date]) : null;
   const readonly = a.closest('.readonly');
   if (readonly) return;
 
@@ -2092,7 +2304,7 @@ document.addEventListener('click', async (e) => {
       const rec = getDay(date); const c = rec.cardio[id] ||= {};
       c.done = !c.done;
       if (c.done) ui.pop = `[data-cardio="${id}"] .check`;
-      if (c.done && !c.min) { const it = cardioBlocks().flatMap(b => b.items).find(x => x.id === id); c.min = it?.minMin || 30; }
+      if (c.done && !c.min) { const it = cardioItems(rec).find(x => x.id === id); c.min = it?.minMin || 30; }
       break;
     }
     case 'open-note': ui.notesOpen[date + ':' + a.dataset.ex] = true; render(); $(`textarea[data-ex="${a.dataset.ex}"]`)?.focus(); return;
@@ -2137,6 +2349,36 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'del-custom': { const rec = getDay(date); rec.custom = rec.custom.filter(c => c.id !== a.dataset.id); break; }
+    case 'show-adder': ui.exAdderOpen = date; render(); $('[data-input="ex-search"]')?.focus(); return;
+    case 'hide-adder': ui.exAdderOpen = null; ui.exQ = ''; ui.exGroup = ''; return render();
+    case 'ex-group': ui.exGroup = ui.exGroup === a.dataset.g ? '' : a.dataset.g; refreshExResults(); return;
+    case 'add-extra': {
+      const x = libExercise(a.dataset.xid); if (!x) return;
+      if (!addExtra(date, x)) return toast(`${x.name} is already on today's list`);
+      ui.exQ = '';
+      save(); render(); toast(`Added ${x.name}`);
+      document.querySelector(x.kind === 'cardio' ? `[data-cardio="${x.id}"]` : `.ex[data-ex="${x.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    case 'new-ex': openExerciseEditor(null, { addTo: a.closest('.settings') ? null : date, name: ui.exQ?.trim() || '' }); return;
+    case 'edit-libex': { const x = libExercise(a.dataset.xid); if (x) openExerciseEditor(x, { addTo: x.mine ? null : date }); return; }
+    case 'edit-myex': { const x = (data.exercises || []).find(y => y.id === a.dataset.xid); if (x) openExerciseEditor({ ...x, mine: true }); return; }
+    case 'extra-sets': {
+      const e = extraLifts(getDay(date)).find(x => x.id === a.dataset.ex); if (!e) return;
+      e.sets = clamp((e.sets || 3) + (+a.dataset.d), 1, 10);
+      break;
+    }
+    case 'del-extra': {
+      const rec = getDay(date), id = a.dataset.ex;
+      const logged = rec.sets?.[id]?.some(r => r && Object.values(r).some(c => c?.c || c?.r)) || rec.cardio?.[id]?.done;
+      if (logged && !confirmInline(a)) return toast('Click again to remove it and what you logged');
+      rec.extraEx = dayExtras(rec).filter(x => x.id !== id);
+      delete rec.sets?.[id]; delete rec.cardio?.[id]; delete rec.exNotes?.[id];
+      if (!rec.extraEx.length && sched(date).kind !== 'train') delete rec.planOff;
+      break;
+    }
+    case 'plan-off': getDay(date).planOff = true; toast('Plan skipped today. Only what you added counts.'); break;
+    case 'plan-on': delete getDay(date).planOff; break;
     case 'cqty': {
       const c = getDay(date).custom.find(x => x.id === a.dataset.id); if (!c) return;
       const st = foodStep(c.unit);
@@ -2287,7 +2529,8 @@ function confirmInline(btn) {
 }
 
 function maybeCollapse(date, exId) {
-  const e = allExercises().find(x => x.id === exId);
+  const e = findLift(exId, data.days[date]);
+  if (!e) return;
   const p = exProgress(data.days[date], e);
   if (p.d === p.t) delete ui.open[date + ':' + exId];
 }
@@ -2297,6 +2540,7 @@ document.addEventListener('input', (e) => {
   const el = e.target, k = el.dataset.input, date = ui.date;
   if (!k) return;
   if (k === 'food-search') { ui.foodQ = el.value; refreshFoodResults(); return; }
+  if (k === 'ex-search') { ui.exQ = el.value; refreshExResults(); return; }
   if (k === 'day-note') { getDay(date).note = el.value; save(); }
   if (k === 'ex-note') { getDay(date).exNotes[el.dataset.ex] = el.value; save(); }
   if (k === 'rehab-note') { getDay(date).rehabNote = el.value; save(); }
@@ -2309,6 +2553,11 @@ document.addEventListener('change', (e) => {
     const side = el.closest('.side');
     const v = el.value === '' ? null : +el.value;
     setCell(date, side.dataset.ex, +side.dataset.set, side.dataset.side, { w: v });
+    save(); return render();
+  }
+  if (k === 'secs') {
+    const side = el.closest('.side'), v = el.value === '' ? 0 : Math.max(0, Math.round(+el.value));
+    setCell(date, side.dataset.ex, +side.dataset.set, side.dataset.side, { r: v, ...(v ? { c: true } : {}) });
     save(); return render();
   }
   if (k === 'cardio-min') {
@@ -2405,6 +2654,11 @@ window.addEventListener('resize', () => {
 });
 // Keyboard: arrow keys move across rep dots.
 document.addEventListener('keydown', (e) => {
+  if (e.target.dataset?.input !== 'ex-search') return;
+  if (e.key === 'Enter') { e.preventDefault(); ($('#ex-results .food-hit.first .hit-main') || (ui.exQ?.trim() ? $('#ex-results .food-hit.create') : null))?.click(); }
+  if (e.key === 'Escape' && (ui.exQ || ui.exGroup)) { e.preventDefault(); e.stopPropagation(); ui.exQ = ''; ui.exGroup = ''; e.target.value = ''; refreshExResults(); }
+});
+document.addEventListener('keydown', (e) => {
   if (e.target.dataset?.input !== 'food-search') return;
   if (e.key === 'Enter') { e.preventDefault(); ($('#food-results .food-hit.first .hit-main') || (ui.foodQ?.trim() ? $('#food-results .food-hit.create') : null))?.click(); }
   if (e.key === 'Escape' && ui.foodQ) { e.preventDefault(); e.stopPropagation(); ui.foodQ = ''; e.target.value = ''; refreshFoodResults(); }
@@ -2457,9 +2711,9 @@ function planDayLabel(sc) { return sc.kind === 'off' ? `Time off (${sc.label})` 
 function workbookSheets() {
   const s = data.settings, today = todayStr(), sc = schedule(), st = stats();
   const allDates = [...new Set([...Object.keys(data.days), ...Object.keys(data.health), ...Object.keys(sc).filter(d => d <= today)])].filter(d => d <= today).sort();
-  const exName = (id) => allExercises().find(e => e.id === id)?.name || id;
+  const exName = (id) => [...allExercises(), ...knownExtraLifts()].find(e => e.id === id)?.name || id;
   const retired = data.program.retired || [];
-  const blockOf = (id) => liftBlocks().find(b => b.exercises.some(e => e.id === id))?.name || (retired.find(e => e.id === id) ? `${retired.find(e => e.id === id).block || ''} (retired)` : '');
+  const blockOf = (id) => liftBlocks().find(b => b.exercises.some(e => e.id === id))?.name || (knownExtraLifts().some(e => e.id === id) ? 'Added that day' : '') || (retired.find(e => e.id === id) ? `${retired.find(e => e.id === id).block || ''} (retired)` : '');
   const fmtRange = (a, b, u = '') => a == null ? '' : `${a}${b != null && b !== a ? '–' + b : ''}${u}`;
 
   // Daily
@@ -2467,7 +2721,7 @@ function workbookSheets() {
   const trendMap = weightTrend().map;
   for (const d of allDates) {
     const rec = data.days[d], h = data.health[d] || {}, sd = sched(d), p = progress(rec), c = calories(d), n = nutrition(dayEntries(rec)).t;
-    const cardioMin = cardioBlocks().flatMap(b => b.items).reduce((a, it) => a + (rec?.cardio?.[it.id]?.done ? +rec.cardio[it.id].min || 0 : 0), 0);
+    const cardioMin = cardioItems(rec).reduce((a, it) => a + (rec?.cardio?.[it.id]?.done ? +rec.cardio[it.id].min || 0 : 0), 0);
     const brk = sd.kind === 'off' ? (s.breaks || []).find(b => b.id === sd.breakId) : null;
     const rTot = brk ? (brk.items || []).reduce((a, it) => a + (+it.times || 1), 0) : '';
     const rDone = brk ? (brk.items || []).reduce((a, it) => a + Math.min(+rec?.rehab?.[it.id] || 0, +it.times || 1), 0) : '';
@@ -2484,7 +2738,7 @@ function workbookSheets() {
   const sets = [['date', 'plan_day', 'block', 'exercise', 'set', 'side', 'reps', 'weight_lb', 'est_1rm_lb', 'drop_set_to_failure', 'completed', 'target_reps', 'exercise_note']];
   for (const d of Object.keys(data.days).sort()) {
     const rec = data.days[d];
-    for (const e of [...allExercises(), ...retired]) {
+    for (const e of [...allExercises(), ...retired, ...extraLifts(rec).filter(x => !allExercises().some(p => p.id === x.id))]) {
       const arr = rec.sets?.[e.id];
       if (!arr) continue;
       arr.forEach((row, i) => {
@@ -2705,7 +2959,7 @@ function exportCandidates() {
       }
     }
     // Cardio (Beat Saber), right after lifting
-    for (const b of cardioBlocks()) for (const it of b.items) {
+    for (const it of cardioItems(rec)) {
       const c = rec.cardio?.[it.id], k = `c:${d}:${it.id}`;
       if (!sh.cardio || !c?.done || !(+c.min > 0) || !finished || sent(k, d)) continue;
       out.cardio.push({ name: it.name, start: isoLocal(liftEnd), when: whenText(liftEnd), minutes: +c.min, kcal: sh.calories ? Math.round(+c.min * kcalPerMin(it.met || 6, d)) : 0, day: d });
@@ -2891,11 +3145,12 @@ function migrate(d) {
   d.settings.goal = { ...base.settings.goal, ...(d.settings.goal || {}) };
   d.swapFoods ||= structuredClone(DEFAULT_SWAPS);
   d.foods ||= [];
+  d.exercises ||= [];
   if (!d.meta) {
     // Data from before sync existed: mark everything as "changed long ago" (1) so a fresh install never overrides it.
     d.meta = { t: {} };
     const t = d.meta.t;
-    for (const k of ['program', 'meals', 'swapFoods', 'foods']) t[k] = 1;
+    for (const k of ['program', 'meals', 'swapFoods', 'foods', 'exercises']) t[k] = 1;
     for (const k of Object.keys(d.settings)) if (!LOCAL_KEYS.includes(k)) t['set:' + k] = 1;
     for (const k of Object.keys(d.days)) t['day:' + k] = 1;
     for (const k of Object.keys(d.health)) t['health:' + k] = 1;

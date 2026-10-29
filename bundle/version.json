@@ -1,6 +1,6 @@
 {
-  "version": "1.10.0",
+  "version": "1.11.0",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Food library: search 100+ foods to add, and save your own foods for next time."
+  "notes": "Add any of 200+ exercises, cardio or sports to a day, or create your own."
 }

@@ -970,3 +970,33 @@ b.pos { color: var(--pos); } b.neg { color: var(--neg); }
 .myfood-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 8px 8px 14px; border-radius: 14px; background: var(--surface-2); }
 .myfood-list small { display: block; color: var(--muted); font-size: 12px; }
 @media (max-width: 640px) { .fe-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ---------- Added exercises (exercise library) ---------- */
+.hue-extra { --h: var(--cyan); --hc: var(--cyan-c); --hi: var(--cyan-ink); }
+.hue-extra .block-num { font-size: 26px; }
+.link-btn.inline { font-size: inherit; padding: 0; height: auto; vertical-align: baseline; }
+.add-ex-btn { width: 100%; margin-top: 12px; padding: 14px; border-radius: 20px; border: 1.5px dashed var(--line); color: var(--cyan-ink); font-weight: 600; font-size: 14.5px; background: transparent; transition: background .15s, border-color .15s; }
+.add-ex-btn:hover { background: var(--cyan-c); border-color: transparent; }
+.ex-adder-cta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 14px; padding: 16px 18px; border-radius: 24px; background: var(--surface); box-shadow: var(--elev); }
+.ex-adder { margin-top: 14px; }
+.ex-adder .card-head { margin-bottom: 0; }
+.ex-groups { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.ex-groups .chip { height: 30px; border-radius: 999px; font-size: 13px; padding: 0 12px; }
+.ex-hits { max-height: 420px; overflow: auto; padding-right: 2px; }
+.extra-tools { display: flex; align-items: center; gap: 10px; margin: 6px 0 2px; font-size: 13.5px; color: var(--muted); }
+.extra-tools .link-btn { margin-left: auto; }
+.link-btn.danger { color: var(--red-ink); }
+.link-btn.danger.armed { color: #fff; background: var(--red); border-radius: 999px; padding: 2px 10px; }
+.side.timed .wt.secs input { width: 84px; }
+.plan-off-note { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: space-between; padding: 14px 18px; border-radius: 20px; background: var(--surface-2); color: var(--muted); margin-bottom: 14px; }
+.plan-off-note b { color: var(--text); }
+.seg { display: flex; gap: 6px; padding: 4px; border-radius: 999px; background: var(--surface-2); }
+.seg label { flex: 1; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg span { display: block; text-align: center; padding: 8px 10px; border-radius: 999px; font-size: 13.5px; font-weight: 500; color: var(--muted); cursor: pointer; }
+.seg input:checked + span { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.seg input:focus-visible + span { outline: 2px solid var(--primary); }
+.ex-editor[data-kind="lift"] .only-cardio, .ex-editor[data-kind="cardio"] .only-lift { display: none; }
+.fe-side { grid-column: 1 / -1; }
+.ex-editor select { width: 100%; }
+.block-name small .sep { margin: 0 6px; }
