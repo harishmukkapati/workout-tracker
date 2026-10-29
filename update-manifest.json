@@ -1,18 +1,19 @@
 {
-  "version": "1.9.3",
+  "version": "1.10.0",
   "minShell": 1,
-  "ref": "2a76c4201b64174123982b87883c9b17ed0de3d0",
-  "notes": "Apple Health sends are confirmed only after they're saved, so nothing gets lost.",
+  "ref": "cfd233ce8a69cb34d1d9216dc4262fb422203120",
+  "notes": "Food library: search 100+ foods to add, and save your own foods for next time.",
   "files": {
-    "app/app.js": "679be1a205de113bb860aa13503b4348f1391936591b4f9e043cb7f4631a9723",
+    "app/app.js": "784d197f5d7dcbb2bb81525ba796a1e0fa4dd7d4c0c812b6239979cbaa128cf5",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
-    "app/index.html": "3f4bc0d8193cffe5e732b6bb057c371cfad4376375f341de9e3a43fa3dbecca1",
-    "app/styles.css": "72a4998b6c41734877957f1c8bfcd438bf80cd93c0ba7a0428a5c40cb58d71bb",
+    "app/foods.js": "91165ee7cf97ce6e29769b449ebee58573b7fc7eaded73f3c333574c1ad3b6ce",
+    "app/index.html": "164d58d41dead6347488a1b9101133d0c2fd7241fe08fb7f0f618ab9a4743605",
+    "app/styles.css": "2a27f631e993c9ef70049266a4043340b288f23e3776d47dabe7918778d09409",
     "core.js": "8b9a85296428e3d077ada477bfc9001902d99647c3722fa4d9dadeabd4d9d060",
     "preload.js": "51ae11f50044ce4da15a76d922c0ad21dd162f61b581b9f17c161d543ec86933",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
     "src/xlsx.js": "0ca61e04aeed2908196e8b0c9f057de8087b2ca6c56d943e0db09b77b2458fb1",
-    "version.json": "d733ec5f6ff88915c43020b0f77ba72eba1248b33649da0d33d5710a585f88d3"
+    "version.json": "a7de9c6ba7f4a53e59a5d0e5e01989827708b60cf1d2cd597dcc95cba0f90062"
   }
 }
