@@ -1,19 +1,20 @@
 {
-  "version": "1.10.0",
+  "version": "1.11.0",
   "minShell": 1,
-  "ref": "cfd233ce8a69cb34d1d9216dc4262fb422203120",
-  "notes": "Food library: search 100+ foods to add, and save your own foods for next time.",
+  "ref": "3a934f112e7882a4acec9dbb53e540b3d014fefa",
+  "notes": "Add any of 200+ exercises, cardio or sports to a day, or create your own.",
   "files": {
-    "app/app.js": "784d197f5d7dcbb2bb81525ba796a1e0fa4dd7d4c0c812b6239979cbaa128cf5",
+    "app/app.js": "43cffae0e4ba5e1842e19795564e3a8881d2057724b64233b30048eebd5b30d9",
+    "app/exercises.js": "59f78abcc5ce9dfe8c7d951a5b5b1c77b469a32ec9dbb88f5f9f8fef3c24ee2c",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/foods.js": "91165ee7cf97ce6e29769b449ebee58573b7fc7eaded73f3c333574c1ad3b6ce",
-    "app/index.html": "164d58d41dead6347488a1b9101133d0c2fd7241fe08fb7f0f618ab9a4743605",
-    "app/styles.css": "2a27f631e993c9ef70049266a4043340b288f23e3776d47dabe7918778d09409",
+    "app/index.html": "49e17c9b3abb361aac64df5411b1758395ef48f19e30a218d29119132c2c41b1",
+    "app/styles.css": "c38a46a82bcdb5227640f7092b453c5b6e50ae9644ef15ebb457acf98f9bcbf4",
     "core.js": "8b9a85296428e3d077ada477bfc9001902d99647c3722fa4d9dadeabd4d9d060",
     "preload.js": "51ae11f50044ce4da15a76d922c0ad21dd162f61b581b9f17c161d543ec86933",
     "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
     "src/xlsx.js": "0ca61e04aeed2908196e8b0c9f057de8087b2ca6c56d943e0db09b77b2458fb1",
-    "version.json": "a7de9c6ba7f4a53e59a5d0e5e01989827708b60cf1d2cd597dcc95cba0f90062"
+    "version.json": "365e916f402cb7efaba15f7312b51d5a3ac00e29f1118590c926997ddc0aeab5"
   }
 }
