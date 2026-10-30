@@ -1,20 +1,20 @@
 {
-  "version": "1.11.0",
+  "version": "1.12.0",
   "minShell": 1,
-  "ref": "3a934f112e7882a4acec9dbb53e540b3d014fefa",
-  "notes": "Add any of 200+ exercises, cardio or sports to a day, or create your own.",
+  "ref": "b90bf1b6c46c951b904b17914d4251a007f70f1a",
+  "notes": "Personalized workout calories, sleep tracking, a rest timer, an easing-back plan after time off, and a weekly recap.",
   "files": {
-    "app/app.js": "43cffae0e4ba5e1842e19795564e3a8881d2057724b64233b30048eebd5b30d9",
+    "app/app.js": "9b21fbc990965412b3f94862d1bd45a4300c12f64267a17f5c1bf4c772f436fe",
     "app/exercises.js": "59f78abcc5ce9dfe8c7d951a5b5b1c77b469a32ec9dbb88f5f9f8fef3c24ee2c",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
     "app/foods.js": "91165ee7cf97ce6e29769b449ebee58573b7fc7eaded73f3c333574c1ad3b6ce",
     "app/index.html": "49e17c9b3abb361aac64df5411b1758395ef48f19e30a218d29119132c2c41b1",
-    "app/styles.css": "c38a46a82bcdb5227640f7092b453c5b6e50ae9644ef15ebb457acf98f9bcbf4",
+    "app/styles.css": "122e2b86330a00c00f3e44176bb578bc08b243f9ba8ffde29c2f6d528f17546f",
     "core.js": "8b9a85296428e3d077ada477bfc9001902d99647c3722fa4d9dadeabd4d9d060",
     "preload.js": "51ae11f50044ce4da15a76d922c0ad21dd162f61b581b9f17c161d543ec86933",
-    "src/importers.js": "9c4a8739e3f514e692029edea1c8260be47808ee5170f7c5501bc72a4a4cd91c",
+    "src/importers.js": "08db120615d48a81cd7b76a7f95f6ca6c75c9e689ac200ba239976e47d045ef8",
     "src/xlsx.js": "0ca61e04aeed2908196e8b0c9f057de8087b2ca6c56d943e0db09b77b2458fb1",
-    "version.json": "365e916f402cb7efaba15f7312b51d5a3ac00e29f1118590c926997ddc0aeab5"
+    "version.json": "f5e1c94b58ae87f56e4caeb2e5dc9ed3c0be41c0b3831dd0e8cfb3b66bfbc386"
   }
 }
