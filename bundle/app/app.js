@@ -150,6 +150,10 @@ function defaultData() {
       threshold: 0.5,
       liftMet: 3.5,
       minPerSetSide: 1.25,
+      tempoSec: 3,    // seconds per rep, for working time
+      restSec: 90,    // rest between sets (also the rest timer)
+      restTimer: true,
+      sleepGoal: 8,
       weightStep: 5,  // lb added when you're ready to go up
       dropMin: 0.5,   // extra minutes of work per drop set to failure
       dropMet: 6,     // vigorous resistance training (Compendium of Physical Activities)
@@ -373,6 +377,50 @@ function stats() {
 // ======================================================================
 // Calories and body weight
 // ======================================================================
+// ---------- Sleep: the night that ended on the morning of `date` ----------
+const toMin = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; };
+const clockText = (t) => { const m = toMin(t); if (m == null) return ''; const h = Math.floor(m / 60) % 24, mm = m % 60; return `${h % 12 || 12}:${String(mm).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
+function sleepOn(date) {
+  const own = data.days[date]?.sleep || {}, h = data.health[date] || {};
+  const bed = own.bed || h.sleepBed || null, wake = own.wake || h.sleepWake || null;
+  let hours = null, source = null;
+  if (own.bed && own.wake) { hours = ((toMin(own.wake) - toMin(own.bed)) + 1440) % 1440 / 60; source = 'you'; }
+  else if (h.sleepH) { hours = +h.sleepH; source = h.source || 'Apple Health'; }
+  else if (own.hours) { hours = +own.hours; source = 'you'; }
+  if (hours != null && (hours < 0.5 || hours > 16)) hours = null;
+  return { hours: hours == null ? null : round(hours, 1), bed, wake, q: own.q || null, source, deep: h.sleepDeep, rem: h.sleepRem, core: h.sleepCore, any: hours != null || !!own.q };
+}
+function sleepAvg(date, n = 7) {
+  const hs = [];
+  for (let i = 0; i < n; i++) { const x = sleepOn(addDays(date, -i)).hours; if (x != null) hs.push(x); }
+  return hs.length ? { avg: round(hs.reduce((a, b) => a + b, 0) / hs.length, 1), n: hs.length } : null;
+}
+const Q_LABELS = ['Awful', 'Poor', 'OK', 'Good', 'Great'];
+function sleepCard(date) {
+  if (date > todayStr()) return '';
+  const sl = sleepOn(date), goal = +data.settings.sleepGoal || 8, av = sleepAvg(date);
+  const own = data.days[date]?.sleep || {};
+  const pct = sl.hours ? clamp(sl.hours / goal, 0, 1) : 0;
+  const st = sl.deep || sl.rem || sl.core ? [['Deep', sl.deep, 'var(--blue)'], ['Core', sl.core, 'var(--cyan)'], ['REM', sl.rem, 'var(--hazel)']].filter(x => x[1]) : [];
+  const stTot = st.reduce((a, x) => a + x[1], 0);
+  return `<section class="card sleep-card">
+    <header class="card-head"><h2>Sleep</h2><span class="hint">${date === todayStr() ? 'Last night' : 'The night before'}${sl.source && sl.source !== 'you' ? `, from ${esc(sl.source)}` : ''}</span></header>
+    <div class="sleep-top">
+      <b class="sleep-h">${sl.hours ?? '–'}<i>h</i></b>
+      <div class="sleep-meta">
+        <div class="sleep-bar ${sl.hours != null && sl.hours >= goal ? 'met' : ''}"><span style="width:${pct * 100}%"></span></div>
+        <small>Goal ${goal} h${av && av.n > 1 ? `, ${av.n}-night average ${av.avg} h` : ''}${sl.bed && sl.wake ? `. ${esc(clockText(sl.bed))} to ${esc(clockText(sl.wake))}` : ''}</small>
+      </div>
+    </div>
+    ${st.length ? `<div class="sleep-stages">${st.map(([l, v, c]) => `<span style="flex:${v};background:${c}" title="${l} ${v} h"></span>`).join('')}</div><div class="stage-key">${st.map(([l, v, c]) => `<span><i style="background:${c}"></i>${l} ${v} h (${Math.round(v / stTot * 100)}%)</span>`).join('')}</div>` : ''}
+    <div class="sleep-in">
+      <label class="field"><span>Bedtime</span><input type="time" data-input="sleep-bed" value="${esc(own.bed || '')}" placeholder="${esc(sl.bed || '')}"></label>
+      <label class="field"><span>Woke up</span><input type="time" data-input="sleep-wake" value="${esc(own.wake || '')}"></label>
+    </div>
+    <div class="sleep-q"><span>How rested?</span>${Q_LABELS.map((l, i) => `<button class="chip ${sl.q === i + 1 ? 'chip-on' : ''}" data-action="sleep-q" data-n="${i + 1}" title="${l}">${l}</button>`).join('')}</div>
+  </section>`;
+}
+
 function weightOn(date) {
   return data.days[date]?.weight ?? data.health[date]?.weightLb ?? null;
 }
@@ -389,7 +437,21 @@ function bmr(date) {
   const kg = lb / 2.20462, cm = p.heightIn * 2.54;
   return 10 * kg + 6.25 * cm - 5 * p.age + (p.sex === 'female' ? -161 : 5);
 }
-const kcalPerMin = (met, date) => met * 3.5 * ((latestWeight(date) || 170) / 2.20462) / 200;
+// Your resting burn per minute. Activity tables (METs) assume an average person's resting rate;
+// scaling them by yours ("corrected METs", Compendium of Physical Activities) fits your size, age and sex.
+const rmrPerMin = (date) => { const b = bmr(date); return b ? b / 1440 : ((latestWeight(date) || 170) / 2.20462) * 0.0175; };
+// Active calories per minute: what an activity burns above resting (the same idea as Apple's Active Energy).
+const kcalPerMin = (met, date) => Math.max(0, met - 1) * rmrPerMin(date);
+// How hard an exercise is while you're doing a set (METs). Big lower-body and full-body lifts cost the most.
+const EX_MET = [
+  [/squat|deadlift|leg press|lunge|step-up|hip thrust|clean|thruster|swing|sled|burpee|man maker|get-up|slam|battle rope/i, 7],
+  [/curl|lateral raise|front raise|y-raise|rear delt|fly|pec deck|extension|pushdown|kickback|calf|face pull|rotation|shrug|pinch|clamshell|abduction|adduction|leg raise/i, 4],
+  [/plank|crunch|dead bug|bird dog|twist|rollout|pallof|hollow|bridge|hang|back extension/i, 4],
+  [/press|row|pull-?up|chin-?up|pulldown|dip|push-up|pullover|carry|rack pull/i, 5.5],
+];
+// Calibrated so a typical moderate session averages close to the Compendium's 3.5 METs for resistance training.
+const exerciseMet = (e) => +e.met || EX_MET.find(([re]) => re.test(e.name))?.[1] || 4.5;
+const REST_MET = 2; // between sets, heart rate still up
 
 function planItemById(id) {
   for (const m of data.meals) for (const it of m.items) if (it.id === id) return { it, meal: m };
@@ -684,30 +746,65 @@ function dropsDone(rec) {
   }
   return n;
 }
-// Lifting energy: logged sets at moderate effort, plus drop sets at vigorous effort.
-// With a measured session length, the drop time is already inside it, so only the extra intensity is added.
+// Your best estimated one-rep max for an exercise over the last 6 months, up to this day.
+function bestE1RM(exId, date) {
+  return memoize(`best:${exId}:${date}`, () => {
+    const from = addDays(date, -182);
+    return sessionsOf(exId, addDays(date, 1), 60).filter(x => x.date >= from).reduce((m, x) => Math.max(m, sessionE1RM(x.sets)), 0);
+  });
+}
+// Lifting energy, set by set:
+//   working time = reps x your rep tempo, at that exercise's effort, nudged up for heavy sets (close to your best)
+//   rest time    = your rest between sets (or, if you timed the session, whatever the working time doesn't cover)
+//   drop sets    = extra minutes at vigorous effort
+// Everything is active calories (above resting), scaled to your resting burn.
 function liftEnergy(rec, date, realMinutes) {
-  const s = data.settings, drops = dropsDone(rec), dropTime = drops * (s.dropMin ?? 0.5);
-  const kLift = kcalPerMin(s.liftMet, date), kDrop = kcalPerMin(s.dropMet ?? 6, date);
-  if (realMinutes) return { minutes: realMinutes, kcal: realMinutes * kLift + dropTime * Math.max(0, kDrop - kLift), drops, dropK: dropTime * Math.max(0, kDrop - kLift) };
-  const base = progress(rec).sidesDone * s.minPerSetSide;
-  return { minutes: base + dropTime, kcal: base * kLift + dropTime * kDrop, drops, dropK: dropTime * kDrop };
+  const s = data.settings, k = rmrPerMin(date), tempo = +s.tempoSec || 3, rest = +s.restSec || 90;
+  let workMin = 0, workK = 0, restMin = 0, sides = 0, drops = 0, dropMin = 0;
+  for (const e of dayLifts(rec)) {
+    const met = exerciseMet(e), ns = sidesOf(e).length, best = bestE1RM(e.id, date);
+    for (let i = 0; i < e.sets; i++) for (const side of sidesOf(e)) {
+      const c = cell(rec, e.id, i, side);
+      if (!c?.c) continue;
+      sides++;
+      const reps = +c.r || e.repMin || 8;
+      const m = e.unit === 'sec' ? reps / 60 : reps * tempo / 60;
+      const eff = +c.w > 0 && best ? 0.85 + 0.3 * clamp(epley(+c.w, reps) / best, 0, 1) : 1;
+      workMin += m; workK += m * Math.max(0, met * eff - 1) * k;
+      restMin += rest / 60 / ns;
+      if (e.drop && i === e.sets - 1 && c.d) { drops++; dropMin += +s.dropMin || 0.5; }
+    }
+  }
+  const dropK = dropMin * Math.max(0, (+s.dropMet || 6) - 1) * k;
+  if (realMinutes) restMin = Math.max(0, realMinutes - workMin - dropMin);
+  const restK = restMin * (REST_MET - 1) * k;
+  return { minutes: workMin + restMin + dropMin, workMin, restMin, kcal: workK + restK + dropK, workK, restK, drops, dropK, sides, measured: !!realMinutes };
+}
+// Lifting minutes from when you started to when you tapped Finish, minus logged cardio (10 min to 4 h to count).
+function measuredLiftMinutes(rec, date) {
+  if (!rec?.startedAt || !sameDay(rec.finishedAt, date) || !sameDay(rec.startedAt, date)) return null;
+  const cardio = cardioItems(rec).reduce((a, it) => a + (rec.cardio?.[it.id]?.done ? +rec.cardio[it.id].min || 0 : 0), 0);
+  const m = (rec.finishedAt - rec.startedAt) / 60000 - cardio;
+  return m >= 10 && m <= 240 ? m : null;
 }
 function calories(date) {
   const rec = data.days[date], h = data.health[date], s = data.settings;
   const { kcal: inK, protein } = foodTotals(rec);
   const p = progress(rec);
-  const lift = liftEnergy(rec, date);
-  const liftK = lift.kcal;
+  const lift = liftEnergy(rec, date, measuredLiftMinutes(rec, date));
+  let liftK = lift.kcal;
   let cardioK = 0;
   for (const it of cardioItems(rec)) cardioK += (+rec?.cardio?.[it.id]?.min || 0) * kcalPerMin(it.met || 6, date);
+  // Calories your Apple Watch measured for the whole workout replace both estimates.
+  const watch = +rec?.watchKcal || 0;
+  if (watch) { liftK = watch; cardioK = 0; }
   const b = bmr(date);
   let out = null, basis = '';
   if (rec?.outOverride) { out = +rec.outOverride; basis = 'Entered by you'; }
   else if (h?.total) { out = h.total; basis = `From ${h.source || 'imported data'}`; }
   else if (h?.active && (h.basal || b)) { out = (h.basal || b) + h.active; basis = `Active energy from ${h.source || 'imported data'}`; }
   else if (b) { out = b * s.activityFactor + liftK + cardioK; basis = 'Estimated from your profile and logged training'; }
-  return { inK, protein, out, basis, liftK, cardioK, drops: lift.drops, dropK: lift.dropK, bmr: b, net: out != null ? inK - out : null, steps: h?.steps };
+  return { inK, protein, out, basis, liftK, cardioK, drops: lift.drops, dropK: lift.dropK, lift, watch, bmr: b, net: out != null ? inK - out : null, steps: h?.steps };
 }
 
 // ======================================================================
@@ -724,7 +821,33 @@ function lastSession(exId, before) {
   }
   return null;
 }
+// ---------- Return-to-training ramp after time off ----------
+// After a break of a week or more, weights start at 60% of what you lifted before, then 75%, then 90%,
+// one week each, before normal progression takes over.
+const RAMP = [0.6, 0.75, 0.9];
+const rampOn = (b) => b.ramp ?? (b.start && b.end && diffDays(b.start, b.end) >= 6);
+function rampFor(date) {
+  return memoize('ramp:' + date, () => {
+    for (const b of data.settings.breaks || []) {
+      if (!b.start || !b.end || !rampOn(b)) continue;
+      const since = diffDays(b.end, date) - 1; // 0 on the first day back
+      if (since >= 0 && since < RAMP.length * 7) return { br: b, week: Math.floor(since / 7) + 1, weeks: RAMP.length, pct: RAMP[Math.floor(since / 7)], since };
+    }
+    return null;
+  });
+}
+const round25 = (v) => Math.round(v / 2.5) * 2.5;
+// Your working weight for an exercise in the last session before the break started.
+function rampWeight(e, date, i, side) {
+  const r = rampFor(date); if (!r) return null;
+  const before = lastSession(e.id, r.br.start); if (!before) return null;
+  const c = before.sets?.[i]?.[side] || before.sets?.[i]?.L || before.sets?.[i]?.B || Object.values(before.sets?.[0] || {})[0];
+  const top = c?.w ? +c.w : sessionTop(before.sets).top;
+  return top ? { w: round25(top * r.pct), from: top, ...r } : null;
+}
 function suggestWeight(e, date, i, side) {
+  const ramp = rampWeight(e, date, i, side);
+  if (ramp) return ramp.w;
   const prog = progression(e, date);
   if (prog?.kind === 'up') return prog.to;
   const last = lastSession(e.id, date);
@@ -769,6 +892,8 @@ function progression(e, date) {
   });
 }
 function progressChip(e, date) {
+  const rw = rampWeight(e, date, 0, sidesOf(e)[0]);
+  if (rw) return `<span class="prog-chip ramp">Easing back: ${rw.w} lb (${Math.round(rw.pct * 100)}% of your ${rw.from} lb), week ${rw.week} of ${rw.weeks}</span>`;
   const p = progression(e, date);
   if (!p) return '';
   if (p.kind === 'up') return `<span class="prog-chip up">Ready to go up: ${p.to} lb today</span>`;
@@ -1002,6 +1127,7 @@ function viewToday() {
           <div class="sum-item"><b>${num(cal.protein)}<i>g</i></b><small>${tg?.protein ? `of ${tg.protein} g protein` : 'protein'}</small></div>
           <div class="sum-item"><b>${st.streak}</b><small>day streak</small></div>
           ${(() => { const r = weeklyRate(), m = maintenance(), w = +data.days[date]?.water || 0; return `
+          ${(() => { const sl = sleepOn(date); return `<div class="sum-item wide-only t-sleep"><b>${sl.hours ?? '–'}<i>h</i></b><small>sleep last night</small></div>`; })()}
           <div class="sum-item wide-only t-water"><b>${w}<i>/${+data.settings.waterGoal || 8}</i></b><small>cups of water</small></div>
           <div class="sum-item wide-only t-trend"><b>${r == null ? '–' : (r > 0 ? '+' : '') + r}</b><small>lb per week</small></div>
           <div class="sum-item wide-only t-hit"><b>${st.rate30 == null ? '–' : Math.round(st.rate30 * 100) + '%'}</b><small>days hit, 30 days</small></div>
@@ -1010,6 +1136,8 @@ function viewToday() {
       </div>
     </header>
     ${date === todayStr() ? backupNudge() : ''}
+    ${recapCard(date)}
+    ${(() => { const r = rampFor(date); if (!r || (sched(date).kind !== 'train' && !dayExtras(data.days[date]).length)) return ''; return `<div class="nudge ramp-nudge"><span class="nudge-dot"></span><p><b>Easing back in after ${esc(r.br.label || 'time off')}, week ${r.week} of ${r.weeks}.</b> Suggested weights are ${Math.round(r.pct * 100)}% of what you lifted before${r.week < r.weeks ? `, then ${Math.round(RAMP[r.week] * 100)}% next week` : ', then back to normal progression'}. Stop any exercise that hurts the knee and check with your PT.</p><button class="btn btn-small btn-ghost" data-action="edit-breaks">Change</button></div>`; })()}
     ${nudge(date, sc, p)}
     <div class="cols">
       <section class="workout-col" aria-label="Workout">
@@ -1019,6 +1147,7 @@ function viewToday() {
         ${activityCard(date)}
         ${caloriesCard(date, cal)}
         ${nutritionCard(date)}
+        ${sleepCard(date)}
         ${weightCard(date)}
         ${waterCard(date)}
       </aside>
@@ -1030,6 +1159,67 @@ function viewToday() {
       </aside>
     </div>
   </div>`;
+}
+
+// ---------- Weekly recap (Monday to Sunday) ----------
+function weekRecap(ws) {
+  return memoize('recap:' + ws, () => {
+    const today = todayStr(), days = Array.from({ length: 7 }, (_, i) => addDays(ws, i)).filter(d => d <= today && d >= data.settings.startDate);
+    if (!days.length) return null;
+    const sc = days.map(d => ({ d, s: sched(d) }));
+    const planned = sc.filter(x => x.s.kind === 'train' && x.s.status !== 'today').length + sc.filter(x => x.s.status === 'today' && isDone(data.days[x.d])).length;
+    const done = sc.filter(x => x.s.status === 'done').length, bonus = sc.filter(x => x.s.status === 'extra').length, missed = sc.filter(x => x.s.status === 'missed').length;
+    // Lifts that beat their previous best top weight or estimated max this week.
+    const ups = [];
+    for (const e of [...allExercises(), ...knownExtraLifts()]) {
+      const wk = days.map(d => data.days[d]?.sets?.[e.id]).filter(Boolean);
+      if (!wk.length) continue;
+      const nowTop = Math.max(...wk.map(a => sessionTop(a).top)), nowE = Math.max(...wk.map(a => sessionE1RM(a)));
+      const before = sessionsOf(e.id, ws, 9999);
+      if (!before.length || !(nowTop || nowE)) continue;
+      const bTop = Math.max(...before.map(x => sessionTop(x.sets).top)), bE = Math.max(...before.map(x => sessionE1RM(x.sets)));
+      if (nowTop > bTop) ups.push(`${e.name} ${nowTop} lb`);
+      else if (nowE > bE + 0.5) ups.push(`${e.name} (more reps)`);
+    }
+    const food = days.map(d => nutrition(dayEntries(data.days[d]))).filter(n => n.count);
+    const kcal = food.length ? food.reduce((a, n) => a + n.t.kcal, 0) / food.length : null;
+    const protein = food.length ? food.reduce((a, n) => a + n.t.protein, 0) / food.length : null;
+    const ptarget = targets(days[days.length - 1])?.protein;
+    const pHit = ptarget ? days.filter(d => { const n = nutrition(dayEntries(data.days[d])); return n.count && n.t.protein >= ptarget * 0.95; }).length : null;
+    const sl = days.map(d => sleepOn(d).hours).filter(x => x != null);
+    const tr = weightTrend().list, at = (d) => { let v = null; for (const p of tr) { if (p.x <= d) v = p.y; else break; } return v; };
+    const w0 = at(addDays(ws, -1)), w1 = at(days[days.length - 1]);
+    let vol = 0; for (const d of days) for (const arr of Object.values(data.days[d]?.sets || {})) for (const row of arr || []) if (row) for (const c of Object.values(row)) if (c?.c && +c.w > 0) vol += (+c.r || 0) * +c.w;
+    return { ws, days: days.length, planned, done, bonus, missed, ups, kcal, protein, ptarget, pHit, foodDays: food.length, sleep: sl.length ? round(sl.reduce((a, b) => a + b, 0) / sl.length, 1) : null, sleepN: sl.length, dw: w0 != null && w1 != null ? round(w1 - w0, 1) : null, vol: Math.round(vol), complete: days.length === 7 && addDays(ws, 6) < today };
+  });
+}
+function recapCard(date) {
+  if (date !== todayStr()) return '';
+  const dow = (parseDate(date).getDay() + 6) % 7; // 0 = Monday
+  if (dow !== 6 && dow > 1) return '';
+  const ws = dow === 6 ? weekStart(date) : addDays(weekStart(date), -7);
+  if ((data.settings.recapSeen || {})[ws]) return '';
+  const r = weekRecap(ws);
+  if (!r) return '';
+  const line = (label, v) => v == null || v === '' ? '' : `<li><span>${label}</span><b>${v}</b></li>`;
+  return `<section class="card recap-card">
+    <header class="card-head"><h2>${dow === 6 ? 'Your week so far' : 'Last week'}</h2><span class="hint">${esc(shortDate(ws))} to ${esc(shortDate(addDays(ws, 6)))}</span><button class="icon-btn sm" data-action="recap-dismiss" data-ws="${ws}" aria-label="Dismiss">${ICON.x}</button></header>
+    <div class="recap-big"><b>${r.done}${r.planned ? `<i>/${r.planned}</i>` : ''}</b><span>training days done${r.bonus ? `, plus ${r.bonus} bonus session${r.bonus === 1 ? '' : 's'}` : ''}${r.missed ? `, ${r.missed} missed` : ''}</span></div>
+    ${r.ups.length ? `<p class="recap-ups"><b>Went up:</b> ${esc(r.ups.join(', '))}</p>` : ''}
+    <ul class="recap-list">
+      ${line('Average calories', r.kcal != null ? `${num(r.kcal)} kcal (${r.foodDays} day${r.foodDays === 1 ? '' : 's'} logged)` : null)}
+      ${line('Average protein', r.protein != null ? `${num(r.protein)} g${r.ptarget ? `, goal hit ${r.pHit} of ${r.foodDays} days` : ''}` : null)}
+      ${line('Average sleep', r.sleep != null ? `${r.sleep} h (${r.sleepN} nights)` : null)}
+      ${line('Weight trend', r.dw != null ? `${r.dw > 0 ? '+' : ''}${r.dw} lb` : null)}
+      ${line('Volume lifted', r.vol ? `${num(r.vol)} lb` : null)}
+    </ul>
+  </section>`;
+}
+function recapTable() {
+  const rows = [];
+  for (let i = 0; i < 8; i++) { const r = weekRecap(addDays(weekStart(todayStr()), -7 * i)); if (r) rows.push(r); }
+  if (!rows.length) return '<p class="empty-msg">Your first week shows up here.</p>';
+  return `<table class="lifts recap-t"><thead><tr><th>Week of</th><th>Training</th><th>Went up</th><th>Avg kcal</th><th>Avg protein</th><th>Avg sleep</th><th>Weight</th></tr></thead><tbody>${rows.map(r => `<tr><td>${esc(shortDate(r.ws))}${r.complete ? '' : ' <small>so far</small>'}</td><td>${r.done}/${r.planned}${r.bonus ? ` +${r.bonus}` : ''}</td><td>${r.ups.length ? `<span title="${esc(r.ups.join(', '))}">${r.ups.length} lift${r.ups.length === 1 ? '' : 's'}</span>` : '–'}</td><td>${r.kcal != null ? num(r.kcal) : '–'}</td><td>${r.protein != null ? num(r.protein) + ' g' : '–'}</td><td>${r.sleep != null ? r.sleep + ' h' : '–'}</td><td>${r.dw != null ? (r.dw > 0 ? '+' : '') + r.dw + ' lb' : '–'}</td></tr>`).join('')}</tbody></table>`;
 }
 
 // ---------- At a glance (extra column on wide screens) ----------
@@ -1139,6 +1329,7 @@ function workoutSection(date, sc, rec, p, isFuture, isPast) {
       <label class="field grow"><span>Workout notes</span>
         <textarea rows="2" data-input="day-note" placeholder="How did it feel? Anything to change next time?">${esc(rec?.note || '')}</textarea>
       </label>
+      <label class="field watch-k"><span>Watch calories</span><span class="wt"><input type="number" min="0" step="1" data-input="watch-kcal" value="${rec?.watchKcal || ''}" placeholder="optional" aria-label="Active calories from your Watch for this workout"><span>kcal</span></span></label>
       <div class="finish-actions">
         ${done
           ? `<span class="done-stamp">${ICON.check} Finished ${rec.finishedAt ? new Date(rec.finishedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''}</span><button class="btn btn-ghost btn-small" data-action="unfinish">Undo</button>`
@@ -1213,6 +1404,7 @@ function recoveryCard(date, sc) {
       <span>Pain today</span>
       <div class="pain-scale">${PAIN_COLORS.map((c, k) => `<button class="pain-dot ${rec?.pain === k ? 'on' : ''}" style="--pc:${c}" data-action="pain" data-n="${k}" aria-label="Pain ${k} of 10">${k}</button>`).join('')}</div>
     </div>
+    ${(() => { const sl = sleepOn(date), g = +data.settings.sleepGoal || 8; return `<p class="rehab-sleep ${sl.hours != null && sl.hours >= g ? 'met' : ''}"><b>Sleep last night:</b> ${sl.hours != null ? `${sl.hours} h of your ${g} h goal` : 'not logged yet (add it in the Sleep card)'}. Most healing happens during sleep, so it counts as part of recovery.</p>`; })()}
     <label class="field"><span>Notes for your PT</span><textarea rows="2" data-input="rehab-note" placeholder="Swelling, range of motion, how the knee felt">${esc(rec?.rehabNote || '')}</textarea></label>` : ''}
   </section>`;
 }
@@ -1271,7 +1463,7 @@ function exerciseRow(date, e, rec, extra = false) {
   <article class="ex ${complete ? 'complete' : ''} ${open ? 'open' : ''}" data-ex="${e.id}">
     <button class="ex-head" data-action="toggle-ex" data-ex="${e.id}" aria-expanded="${open}">
       <span class="ex-check">${complete ? ICON.check : ''}</span>
-      <span class="ex-text"><span class="ex-name">${esc(e.name)}</span><span class="ex-meta">${esc(meta)}</span>${progression(e, date)?.kind === 'up' && !complete ? `<span class="up-flag">Go up to ${progression(e, date).to} lb</span>` : ''}</span>
+      <span class="ex-text"><span class="ex-name">${esc(e.name)}</span><span class="ex-meta">${esc(meta)}</span>${!rampFor(date) && progression(e, date)?.kind === 'up' && !complete ? `<span class="up-flag">Go up to ${progression(e, date).to} lb</span>` : ''}</span>
       <span class="ex-count">${p.d}/${p.t}</span>
       <span class="chev">${ICON.down}</span>
     </button>
@@ -1363,7 +1555,7 @@ function caloriesCard(date, cal) {
     ${(() => { const t = targets(date); if (!t?.kcal) return ''; const left = t.kcal - cal.inK; return `<p class="goal-line"><b>Goal ${num(t.kcal)} kcal</b>${t.protein ? `, ${t.protein} g protein` : ''}. ${left >= 0 ? `${num(left)} kcal to go` : `${num(-left)} kcal over`}${t.off ? '. Lower on time-off days.' : '.'}</p>`; })()}
     <p class="hint">${needsProfile
       ? 'Add your age and height in Settings, and log your weight, to estimate calories out.'
-      : esc(cal.basis) + (cal.liftK || cal.cardioK ? `. Lifting ≈ ${num(cal.liftK)}${cal.drops ? ` (${num(cal.dropK)} from ${cal.drops} drop set${cal.drops === 1 ? '' : 's'})` : ''}, cardio ≈ ${num(cal.cardioK)} kcal.` : '.')}
+      : esc(cal.basis) + (cal.watch ? `. Workout: ${num(cal.watch)} kcal from your Watch.` : cal.liftK || cal.cardioK ? `. Lifting ≈ ${num(cal.liftK)} kcal over ${num(cal.lift.minutes)} min (${cal.lift.measured ? 'timed' : 'estimated'}, ${num(cal.lift.workMin)} min working)${cal.drops ? `, incl. ${num(cal.dropK)} from ${cal.drops} drop set${cal.drops === 1 ? '' : 's'}` : ''}; cardio ≈ ${num(cal.cardioK)} kcal.` : '.')}
       ${cal.steps ? ` ${num(cal.steps)} steps.` : ''}</p>
     ${ui.editOut === date ? `<div class="inline-form"><input type="number" data-input="out-override" value="${rec?.outOverride || ''}" placeholder="Total kcal out"><button class="btn btn-small" data-action="save-out">Save</button><button class="btn btn-ghost btn-small" data-action="clear-out">Use estimate</button></div>` : ''}
   </section>`;
@@ -1394,7 +1586,6 @@ function activityCard(date) {
   const extras = [
     h.steps != null && `<span><b>${num(h.steps)}</b> steps</span>`,
     h.restingHR && `<span><b>${h.restingHR}</b> resting bpm</span>`,
-    h.sleepH && `<span><b>${h.sleepH}</b> h sleep</span>`,
   ].filter(Boolean).join('');
   const when = h.syncedAt ? `Synced ${new Date(h.syncedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : `From ${esc(h.source || 'imported data')}`;
   return `<section class="card act-card">
@@ -1672,6 +1863,18 @@ function viewProgress() {
         <div class="chart" data-chart="volume"></div>
       </section>
       <section class="card span-2">
+        <header class="card-head"><h2>Weekly recap</h2><span class="hint">Monday to Sunday</span></header>
+        ${recapTable()}
+      </section>
+      <section class="card span-2 sleep-prog">
+        <header class="card-head"><h2>Sleep</h2>${(() => { const a = sleepAvg(todayStr(), 7); return a ? `<span class="hint">7-night average ${a.avg} h, goal ${+data.settings.sleepGoal || 8} h</span>` : ''; })()}</header>
+        <div class="sleep-charts">
+          <div><h3 class="sub-h">Hours per night</h3><div class="chart" data-chart="sleep"></div></div>
+          <div><h3 class="sub-h">Bedtime and wake time</h3><div class="chart" data-chart="sleep-sched"></div></div>
+        </div>
+        ${sleepInsights()}
+      </section>
+      <section class="card span-2">
         <header class="card-head"><h2>Activity</h2><span class="hint">From Apple Health</span></header>
         <div class="chart" data-chart="activity"></div>
       </section>
@@ -1726,6 +1929,10 @@ function hydrateCharts() {
   const volSeries = liftBlocks().map(b => ({ name: b.name, color: `var(--${({ b1: 'blue', b2: 'red', b3: 'yellow' })[b.hue] || 'green'})`, values: vol.map(v => Math.round(v.by[b.id] || 0)) }));
   if (vol.some(v => v.by.extra)) volSeries.push({ name: 'Added exercises', color: 'var(--cyan)', values: vol.map(v => Math.round(v.by.extra || 0)) });
   drawBars($('[data-chart="volume"]'), vol.map(v => shortDate(v.week)), volSeries, { unit: 'lb', empty: 'Log sets with weights to see weekly volume.' });
+  const nights = [];
+  for (let d = start < data.settings.startDate ? addDays(today, -29) : start, n = 0; d <= today && n < 400; d = addDays(d, 1), n++) { const sl = sleepOn(d); if (sl.hours != null || sl.bed) nights.push({ d, ...sl }); }
+  drawSleepBars($('[data-chart="sleep"]'), nights, +data.settings.sleepGoal || 8);
+  drawSleepSchedule($('[data-chart="sleep-sched"]'), nights.filter(n => n.bed && n.wake));
   const ses = exSessions(ui.progEx);
   drawChart($('[data-chart="strength"]'), [
     { name: 'Top weight', color: 'var(--red)', points: ses.filter(s => s.top).map(s => ({ x: s.date, y: s.top })) },
@@ -1796,6 +2003,78 @@ function drawChart(el, series, { unit = '', empty = 'No data yet.', height = 220
     tip.classList.add('show');
   });
   svg.addEventListener('mouseleave', () => { tip.classList.remove('show'); line.setAttribute('x1', -10); line.setAttribute('x2', -10); });
+}
+// Hours slept per night as bars, with the goal as a dashed line.
+function drawSleepBars(el, nights, goal) {
+  if (!el) return;
+  const pts = nights.filter(n => n.hours != null);
+  if (!pts.length) { el.innerHTML = '<p class="empty-msg">Log bedtime and wake time on Today, or sync sleep from Apple Health.</p>'; return; }
+  const W = Math.max(280, el.clientWidth || 500), H = 200, P = { l: 30, r: 8, t: 10, b: 24 };
+  const max = Math.max(goal + 1, ...pts.map(p => p.hours)) , sy = (v) => P.t + (1 - v / max) * (H - P.t - P.b);
+  const bw = (W - P.l - P.r) / pts.length;
+  let g = niceTicks(0, max, 4).map(v => `<line x1="${P.l}" x2="${W - P.r}" y1="${sy(v)}" y2="${sy(v)}" class="grid"/><text x="${P.l - 6}" y="${sy(v) + 4}" text-anchor="end" class="axis">${num(v)}</text>`).join('');
+  pts.forEach((p, i) => {
+    const x = P.l + i * bw + bw * 0.15, w = Math.max(2, bw * 0.7);
+    g += `<rect x="${x}" y="${sy(p.hours)}" width="${w}" height="${sy(0) - sy(p.hours)}" rx="${Math.min(4, w / 2)}" class="${p.hours >= goal ? 'sb-met' : p.hours >= goal - 1 ? 'sb-near' : 'sb-low'}"><title>${esc(shortDate(p.d))}: ${p.hours} h${p.q ? `, ${Q_LABELS[p.q - 1].toLowerCase()}` : ''}</title></rect>`;
+  });
+  const lbl = [0, Math.floor((pts.length - 1) / 2), pts.length - 1].filter((v, i, a) => a.indexOf(v) === i);
+  for (const i of lbl) g += `<text x="${i === 0 ? P.l : i === pts.length - 1 ? W - P.r : P.l + i * bw + bw / 2}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === pts.length - 1 ? 'end' : 'middle'}" class="axis">${shortDate(pts[i].d)}</text>`;
+  g += `<line x1="${P.l}" x2="${W - P.r}" y1="${sy(goal)}" y2="${sy(goal)}" class="goal-line-svg"/><text x="${W - P.r}" y="${sy(goal) - 5}" text-anchor="end" class="axis">goal ${goal} h</text>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" class="sleep-svg">${g}</svg>`;
+}
+// Each night as a bar from bedtime to wake time, on a clock from 8 PM to noon.
+function drawSleepSchedule(el, nights) {
+  if (!el) return;
+  if (!nights.length) { el.innerHTML = '<p class="empty-msg">Bedtimes show up here once you log them or Apple Health sends them.</p>'; return; }
+  const W = Math.max(280, el.clientWidth || 500), H = 200, P = { l: 52, r: 8, t: 10, b: 24 };
+  const from = 20 * 60, span = 16 * 60; // 8 PM to noon
+  const pos = (t) => { let m = toMin(t) - from; if (m < 0) m += 1440; return clamp(m, 0, span); };
+  const sy = (m) => P.t + m / span * (H - P.t - P.b);
+  const bw = (W - P.l - P.r) / nights.length;
+  let g = '';
+  for (let h = 0; h <= 16; h += 4) { const m = h * 60, clock = (20 + h) % 24; g += `<line x1="${P.l}" x2="${W - P.r}" y1="${sy(m)}" y2="${sy(m)}" class="grid"/><text x="${P.l - 6}" y="${sy(m) + 4}" text-anchor="end" class="axis">${clock % 12 || 12} ${clock < 12 ? 'AM' : 'PM'}</text>`; }
+  nights.forEach((n, i) => {
+    const a = pos(n.bed), b = pos(n.wake), x = P.l + i * bw + bw * 0.2, w = Math.max(2, bw * 0.6);
+    if (b > a) g += `<rect x="${x}" y="${sy(a)}" width="${w}" height="${sy(b) - sy(a)}" rx="${Math.min(4, w / 2)}" class="ss-bar"><title>${esc(shortDate(n.d))}: ${esc(clockText(n.bed))} to ${esc(clockText(n.wake))}</title></rect>`;
+  });
+  const lbl = [0, nights.length - 1].filter((v, i, a) => a.indexOf(v) === i);
+  for (const i of lbl) g += `<text x="${i ? W - P.r : P.l}" y="${H - 6}" text-anchor="${i ? 'end' : 'start'}" class="axis">${shortDate(nights[i].d)}</text>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" class="sleep-svg">${g}</svg>`;
+}
+// What sleep lines up with: next-day lifts, weight trend, bedtime consistency, sleep debt.
+function sleepInsights() {
+  const today = todayStr(), goal = +data.settings.sleepGoal || 8, out = [];
+  // Lifts: estimated max change vs the previous session, by the night before.
+  const groups = { good: [], short: [] };
+  for (let i = 0; i < 120; i++) {
+    const d = addDays(today, -i), rec = data.days[d];
+    if (!rec?.sets) continue;
+    const sl = sleepOn(d).hours; if (sl == null) continue;
+    const ch = [];
+    for (const e of dayLifts(rec)) {
+      const now = sessionE1RM(rec.sets[e.id]); if (!now) continue;
+      const prev = sessionsOf(e.id, d, 1)[0]; const was = prev ? sessionE1RM(prev.sets) : 0;
+      if (was) ch.push((now - was) / was * 100);
+    }
+    if (ch.length) groups[sl >= 7 ? 'good' : 'short'].push(ch.reduce((a, b) => a + b, 0) / ch.length);
+  }
+  const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length, pc = (v) => `${v > 0 ? '+' : ''}${round(v, 1)}%`;
+  if (groups.good.length >= 2 && groups.short.length >= 2) out.push({ tone: avg(groups.good) > avg(groups.short) ? 'good' : 'info', text: `After 7+ hours, your lifts averaged ${pc(avg(groups.good))} estimated max vs the session before (${groups.good.length} sessions). After shorter nights: ${pc(avg(groups.short))} (${groups.short.length} sessions).` });
+  else out.push({ tone: 'info', text: `Once a few sessions follow both short and full nights, this shows how sleep lines up with your lifts. So far: ${groups.good.length} after 7+ hours, ${groups.short.length} after less.` });
+  // Weight: weeks with more sleep vs less, by weight-trend change.
+  const tr = weightTrend().map, wk = [];
+  for (let w = 1; w <= 12; w++) {
+    const end = addDays(today, -7 * (w - 1)), start = addDays(end, -7), a = sleepAvg(end, 7);
+    if (a && a.n >= 4 && tr[end] != null && tr[start] != null) wk.push({ sleep: a.avg, dw: tr[end] - tr[start] });
+  }
+  const hi = wk.filter(x => x.sleep >= 7), lo = wk.filter(x => x.sleep < 7);
+  if (hi.length >= 2 && lo.length >= 2) out.push({ tone: 'info', text: `Weight trend: ${round(avg(hi.map(x => x.dw)), 2)} lb a week in weeks averaging 7+ hours of sleep, ${round(avg(lo.map(x => x.dw)), 2)} lb in shorter weeks.` });
+  // Consistency and debt (last 14 / 7 nights)
+  const beds = []; for (let i = 0; i < 14; i++) { const b = sleepOn(addDays(today, -i)).bed; if (b) { let m = toMin(b) - 18 * 60; if (m < 0) m += 1440; beds.push(m); } }
+  if (beds.length >= 4) { const m = avg(beds), sd = Math.sqrt(avg(beds.map(x => (x - m) ** 2))); const mean = Math.round(m + 18 * 60) % 1440; out.push({ tone: sd <= 30 ? 'good' : sd <= 60 ? 'info' : 'low', text: `Average bedtime ${clockText(`${Math.floor(mean / 60)}:${String(mean % 60).padStart(2, '0')}`)}, give or take ${Math.round(sd)} minutes over ${beds.length} nights.${sd > 45 ? ' A steadier bedtime usually means better sleep.' : ''}` }); }
+  let debt = 0, nn = 0; for (let i = 0; i < 7; i++) { const h = sleepOn(addDays(today, -i)).hours; if (h != null) { debt += goal - h; nn++; } }
+  if (nn >= 3) out.push({ tone: debt > 3 ? 'low' : debt > 0 ? 'info' : 'good', text: debt > 0 ? `${round(debt, 1)} hours short of your ${goal}-hour goal over the last ${nn} nights.` : `You met your ${goal}-hour goal on average over the last ${nn} nights.` });
+  return `<ul class="insights sleep-ins">${out.map(i => `<li class="${i.tone}">${esc(i.text)}</li>`).join('')}</ul>`;
 }
 // Stacked bar chart: one bar per category, series stacked.
 function drawBars(el, cats, series, { unit = '', empty = 'No data yet.' } = {}) {
@@ -2065,8 +2344,21 @@ function viewSettings() {
         <label class="field"><span>Height (ft)</span><input type="number" data-set="ft" value="${ft}"></label>
         <label class="field"><span>Height (in)</span><input type="number" step="0.5" data-set="in" value="${inch}"></label>
         <label class="field"><span>Extra work per drop set (minutes)</span><input type="number" step="0.25" min="0" data-set="dropMin" value="${s.dropMin ?? 0.5}"></label>
+        <label class="field"><span>Seconds per rep (tempo)</span><input type="number" step="0.5" min="1" max="10" data-set="tempoSec" value="${s.tempoSec ?? 3}"></label>
+        <label class="field"><span>Rest between sets (seconds)</span><input type="number" step="15" min="15" max="600" data-set="restSec" value="${s.restSec ?? 90}"></label>
+        <label class="field"><span>Sleep goal (hours)</span><input type="number" step="0.5" min="4" max="12" data-set="sleepGoal" value="${s.sleepGoal ?? 8}"></label>
+        <label class="check-opt field-check"><input type="checkbox" data-set="restTimer" ${s.restTimer !== false ? 'checked' : ''}><span>Start a rest timer when you check off a set</span></label>
       </div>
-      <p class="hint">Calories out = resting burn (Mifflin-St Jeor) × ${s.activityFactor} for daily life, plus lifting (each logged set side ≈ ${s.minPerSetSide} min at moderate effort, each drop set ≈ ${s.dropMin ?? 0.5} min at vigorous effort) and cardio from what you log. Imported fitness data replaces the estimate on days it covers.</p>
+      <details class="howto"><summary>How workout calories are worked out</summary>
+        <ul class="calc-list">
+          <li><b>Your resting burn</b> (${(() => { const b = bmr(todayStr()); return b ? `${num(b)} kcal a day` : 'add age, height and a weigh-in'; })()}) from your sex, age, height and latest weight (Mifflin-St Jeor). Every activity is scaled to it, so the numbers fit you, not an average person.</li>
+          <li><b>Working time</b>: each logged set is its reps × ${s.tempoSec ?? 3} seconds, at that exercise's effort. Big lifts like squats and presses cost more than curls and raises.</li>
+          <li><b>Heavier sets count more</b>: a set near your best for that lift (by estimated max) costs up to 15% more, a light set up to 15% less.</li>
+          <li><b>Rest time</b>: ${s.restSec ?? 90} seconds after each set at a light effort. If you start a workout and tap Finish, the real time you spent is used instead.</li>
+          <li><b>Drop sets</b>: ${s.dropMin ?? 0.5} extra minutes at vigorous effort. <b>Cardio and sports</b>: minutes × their effort.</li>
+          <li>Only calories above resting are added (like Apple's Active Energy), on top of resting burn × ${s.activityFactor} for daily life. Apple Health data replaces the estimate on days it covers, and calories you type in from your Watch replace the workout estimate.</li>
+        </ul>
+      </details>
     </section>
 
     <section class="card"><header class="card-head"><h2>Schedule</h2></header>
@@ -2079,7 +2371,7 @@ function viewSettings() {
       <div class="breaks" id="breaks">
         <h3 class="sub-h">Time off</h3>
         <p class="hint">Days with no training planned, like surgery recovery or a trip. They don't count as misses or break your streak, and you restart at Day 1 the day after.</p>
-        ${(s.breaks || []).map(b => `<div class="break-row"><input data-break="label" data-id="${b.id}" value="${esc(b.label || '')}" placeholder="Time off" aria-label="Name"><label class="field"><span>From</span><input type="date" data-break="start" data-id="${b.id}" value="${b.start}"></label><label class="field"><span>Through</span><input type="date" data-break="end" data-id="${b.id}" value="${b.end}"></label><span class="hint">${b.start && b.end ? `${diffDays(b.start, b.end) + 1} days` : ''}</span><button class="icon-btn sm" data-action="del-break" data-id="${b.id}" aria-label="Remove">${ICON.x}</button></div>`).join('')}
+        ${(s.breaks || []).map(b => `<div class="break-row"><input data-break="label" data-id="${b.id}" value="${esc(b.label || '')}" placeholder="Time off" aria-label="Name"><label class="field"><span>From</span><input type="date" data-break="start" data-id="${b.id}" value="${b.start}"></label><label class="field"><span>Through</span><input type="date" data-break="end" data-id="${b.id}" value="${b.end}"></label><span class="hint">${b.start && b.end ? `${diffDays(b.start, b.end) + 1} days` : ''}</span><label class="check-opt break-ramp"><input type="checkbox" data-break="ramp" data-id="${b.id}" ${rampOn(b) ? 'checked' : ''}><span>Ease back in for 3 weeks after</span></label><button class="icon-btn sm" data-action="del-break" data-id="${b.id}" aria-label="Remove">${ICON.x}</button></div>`).join('')}
         <button class="link-btn" data-action="add-break">+ Add time off</button>
       </div>
     </section>
@@ -2269,14 +2561,18 @@ document.addEventListener('click', async (e) => {
       const patch = { r };
       if (r >= (exDef.repMin || 1)) patch.c = true;
       if (patch.c && (cur?.w == null)) { const w = suggestWeight(exDef, date, ctx.i, ctx.s); if (w !== '') patch.w = +w; }
+      const was = setComplete(data.days[date], exDef, ctx.i);
       setCell(date, ctx.exId, ctx.i, ctx.s, patch);
+      afterSet(date, exDef, ctx.i, was);
       ui.pop = `${sideSel(ctx)} .rep[data-n="${r}"]`;
       break;
     }
     case 'rep-more': {
       const cur = cell(data.days[date], ctx.exId, ctx.i, ctx.s);
       const r = Math.max(cur?.r || 0, exDef.repMax || 0) + 1;
+      const was = setComplete(data.days[date], exDef, ctx.i);
       setCell(date, ctx.exId, ctx.i, ctx.s, { r, c: true });
+      afterSet(date, exDef, ctx.i, was);
       break;
     }
     case 'drop': {
@@ -2290,7 +2586,9 @@ document.addEventListener('click', async (e) => {
       const patch = { c: on };
       if (on && cur?.w == null) { const w = suggestWeight(exDef, date, ctx.i, ctx.s); if (w !== '') patch.w = +w; }
       if (on && !cur?.r) patch.r = exDef.repMax || exDef.repMin || 0;
+      const was = setComplete(data.days[date], exDef, ctx.i);
       setCell(date, ctx.exId, ctx.i, ctx.s, patch);
+      afterSet(date, exDef, ctx.i, was);
       if (on) { ui.pop = `${sideSel(ctx)} .check`; maybeCollapse(date, ctx.exId); }
       break;
     }
@@ -2349,6 +2647,8 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'del-custom': { const rec = getDay(date); rec.custom = rec.custom.filter(c => c.id !== a.dataset.id); break; }
+    case 'recap-dismiss': (data.settings.recapSeen ||= {})[a.dataset.ws] = true; break;
+    case 'sleep-q': { const r = getDay(date); r.sleep ||= {}; r.sleep.q = r.sleep.q === +a.dataset.n ? undefined : +a.dataset.n; break; }
     case 'show-adder': ui.exAdderOpen = date; render(); $('[data-input="ex-search"]')?.focus(); return;
     case 'hide-adder': ui.exAdderOpen = null; ui.exQ = ''; ui.exGroup = ''; return render();
     case 'ex-group': ui.exGroup = ui.exGroup === a.dataset.g ? '' : a.dataset.g; refreshExResults(); return;
@@ -2490,6 +2790,61 @@ document.addEventListener('click', async (e) => {
   render();
 });
 
+// ---------- Rest timer: starts when every side of a set is checked off ----------
+const setComplete = (rec, e, i) => !!e && sidesOf(e).every(sd => cell(rec, e.id, i, sd)?.c);
+function afterSet(date, e, i, wasDone) {
+  if (!e || wasDone || date !== todayStr() || data.settings.restTimer === false) return;
+  if (!setComplete(data.days[date], e, i)) return;
+  const rec = data.days[date];
+  let next = '';
+  if (i < e.sets - 1) next = `Next: set ${i + 2} of ${e.name.toLowerCase()}`;
+  else {
+    const lifts = (rec.planOff ? extraLifts(rec) : dayLifts(rec));
+    const nx = lifts.find(x => x.id !== e.id && exProgress(rec, x).d < exProgress(rec, x).t);
+    if (!nx) return; // that was the last lifting set
+    next = `Next: ${nx.name}`;
+  }
+  startRest(+data.settings.restSec || 90, next);
+}
+let restTick = null;
+function startRest(sec, label) {
+  ui.rest = { end: Date.now() + sec * 1000, total: sec, label, done: false };
+  clearInterval(restTick); restTick = setInterval(paintRest, 250); paintRest();
+}
+function stopRest() { clearInterval(restTick); restTick = null; ui.rest = null; paintRest(); }
+function restBeep() {
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.22].forEach(t => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = 880; g.gain.setValueAtTime(0.0001, ac.currentTime + t); g.gain.exponentialRampToValueAtTime(0.25, ac.currentTime + t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + t + 0.18); o.connect(g).connect(ac.destination); o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.2); });
+    setTimeout(() => ac.close(), 800);
+  } catch {}
+}
+function paintRest() {
+  let el = document.getElementById('rest-timer');
+  const r = ui.rest;
+  if (!r) { el?.remove(); return; }
+  if (!el) {
+    el = document.createElement('div'); el.id = 'rest-timer'; el.setAttribute('role', 'timer');
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-rest]'); if (!b || !ui.rest) return;
+      if (b.dataset.rest === 'skip') return stopRest();
+      ui.rest.end += (+b.dataset.rest) * 1000; ui.rest.total = Math.max(ui.rest.total, Math.ceil((ui.rest.end - Date.now()) / 1000)); ui.rest.done = false; paintRest();
+    });
+    document.body.appendChild(el);
+  }
+  const left = Math.max(0, Math.ceil((r.end - Date.now()) / 1000));
+  if (!left && !r.done) {
+    r.done = true; restBeep();
+    if (document.hidden || !document.hasFocus()) window.api?.notify?.('Rest is up', r.label || 'Time for your next set');
+    setTimeout(() => { if (ui.rest === r) stopRest(); }, 12000);
+  }
+  const R = 20, C = 2 * Math.PI * R, frac = r.total ? left / r.total : 0;
+  el.className = r.done ? 'done' : '';
+  el.innerHTML = `<svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="${R}" class="rt-bg"/><circle cx="24" cy="24" r="${R}" class="rt-val" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - frac)}"/></svg>
+    <div class="rt-text"><b>${r.done ? 'Go' : `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`}</b><small>${esc(r.done ? (r.label || 'Next set') : 'Rest. ' + (r.label || ''))}</small></div>
+    <div class="rt-btns">${r.done ? '' : '<button data-rest="-15" aria-label="15 seconds less">−15</button><button data-rest="15" aria-label="15 seconds more">+15</button>'}<button data-rest="skip" aria-label="${r.done ? 'Close' : 'Skip rest'}">${r.done ? 'Close' : 'Skip'}</button></div>`;
+}
+
 const sideSel = (c) => `.side[data-ex="${c.exId}"][data-set="${c.i}"][data-side="${c.s}"]`;
 
 // Confetti in Google colors, once, when you finish a workout.
@@ -2557,9 +2912,17 @@ document.addEventListener('change', (e) => {
   }
   if (k === 'secs') {
     const side = el.closest('.side'), v = el.value === '' ? 0 : Math.max(0, Math.round(+el.value));
-    setCell(date, side.dataset.ex, +side.dataset.set, side.dataset.side, { r: v, ...(v ? { c: true } : {}) });
+    const e = findLift(side.dataset.ex, data.days[date]), si = +side.dataset.set, was = e && setComplete(data.days[date], e, si);
+    setCell(date, side.dataset.ex, si, side.dataset.side, { r: v, ...(v ? { c: true } : {}) });
+    if (e) afterSet(date, e, si, was);
     save(); return render();
   }
+  if (k === 'sleep-bed' || k === 'sleep-wake') {
+    const r = getDay(date); r.sleep ||= {};
+    if (el.value) r.sleep[k === 'sleep-bed' ? 'bed' : 'wake'] = el.value; else delete r.sleep[k === 'sleep-bed' ? 'bed' : 'wake'];
+    save(); return render();
+  }
+  if (k === 'watch-kcal') { const rec = getDay(date); if (+el.value > 0) rec.watchKcal = Math.round(+el.value); else delete rec.watchKcal; save(); return render(); }
   if (k === 'cardio-min') {
     const id = el.closest('[data-cardio]').dataset.cardio; const rec = getDay(date);
     rec.cardio[id] = { ...(rec.cardio[id] || {}), min: +el.value || 0 }; save(); return render();
@@ -2581,7 +2944,7 @@ document.addEventListener('change', (e) => {
   if (el.dataset.break) {
     const b = (data.settings.breaks || []).find(x => x.id === el.dataset.id);
     if (!b) return;
-    b[el.dataset.break] = el.value;
+    b[el.dataset.break] = el.type === 'checkbox' ? el.checked : el.value;
     if (b.start && b.end && b.end < b.start) b.end = b.start;
     save(); toast('Saved'); if (el.type === 'date') render(); return;
   }
@@ -2612,6 +2975,10 @@ document.addEventListener('change', (e) => {
     if (sk === 'startDate' && el.value) s.startDate = el.value;
     if (sk === 'threshold') s.threshold = +el.value;
     if (sk === 'dropMin') s.dropMin = Math.max(0, +el.value || 0);
+    if (sk === 'tempoSec') s.tempoSec = clamp(+el.value || 3, 1, 10);
+    if (sk === 'restSec') s.restSec = clamp(Math.round(+el.value || 90), 15, 600);
+    if (sk === 'sleepGoal') s.sleepGoal = clamp(+el.value || 8, 4, 12);
+    if (sk === 'restTimer') s.restTimer = el.checked;
     if (sk === 'weightStep') s.weightStep = Math.max(1, +el.value || 5);
     if (sk === 'remOn') s.reminder.on = el.checked;
     if (sk === 'remTime') s.reminder.time = el.value;
@@ -2717,7 +3084,7 @@ function workbookSheets() {
   const fmtRange = (a, b, u = '') => a == null ? '' : `${a}${b != null && b !== a ? '–' + b : ''}${u}`;
 
   // Daily
-  const daily = [['date', 'weekday', 'plan_day', 'status', 'workout_completion_pct', 'workout_finished', 'side_sets_logged', 'drop_sets', 'lifting_kcal_est', 'cardio_minutes', 'cardio_kcal_est', 'kcal_in', 'kcal_out', 'kcal_out_source', 'net_kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugar_g', 'sodium_mg', 'body_weight_lb', 'apple_active_kcal', 'apple_resting_kcal', 'steps', 'exercise_min', 'stand_hours', 'resting_hr_bpm', 'sleep_hours', 'missed_reason', 'missed_note', 'pain_0_10', 'recovery_done', 'recovery_total', 'workout_note', 'recovery_note', 'trend_weight_lb', 'kcal_target', 'protein_target_g', 'water_cups']];
+  const daily = [['date', 'weekday', 'plan_day', 'status', 'workout_completion_pct', 'workout_finished', 'side_sets_logged', 'drop_sets', 'lifting_kcal_est', 'cardio_minutes', 'cardio_kcal_est', 'kcal_in', 'kcal_out', 'kcal_out_source', 'net_kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugar_g', 'sodium_mg', 'body_weight_lb', 'apple_active_kcal', 'apple_resting_kcal', 'steps', 'exercise_min', 'stand_hours', 'resting_hr_bpm', 'sleep_hours', 'missed_reason', 'missed_note', 'pain_0_10', 'recovery_done', 'recovery_total', 'workout_note', 'recovery_note', 'trend_weight_lb', 'kcal_target', 'protein_target_g', 'water_cups', 'bedtime', 'wake_time', 'sleep_quality_1_5', 'sleep_deep_h', 'sleep_rem_h', 'lifting_minutes', 'watch_kcal']];
   const trendMap = weightTrend().map;
   for (const d of allDates) {
     const rec = data.days[d], h = data.health[d] || {}, sd = sched(d), p = progress(rec), c = calories(d), n = nutrition(dayEntries(rec)).t;
@@ -2729,9 +3096,10 @@ function workbookSheets() {
     daily.push([d, longDate(d, { weekday: 'short' }), planDayLabel(sd), sd.status, Math.round(p.pct * 100), yn(rec?.done), p.sidesDone, dropsDone(rec), r0(c.liftK), cardioMin || '', r0(c.cardioK) || '',
       hasFood ? r0(c.inK) : '', r0(c.out), c.out ? (c.basis || '') : '', hasFood && c.out ? r0(c.net) : '',
       hasFood ? r1(n.protein) : '', hasFood ? r1(n.carbs) : '', hasFood ? r1(n.fat) : '', hasFood ? r1(n.fiber) : '', hasFood ? r1(n.sugar) : '', hasFood ? r0(n.sodium) : '',
-      weightOn(d) ?? '', h.active ?? '', h.basal ?? '', h.steps ?? '', h.exercise ?? '', h.stand ?? '', h.restingHR ?? '', h.sleepH ?? '',
+      weightOn(d) ?? '', h.active ?? '', h.basal ?? '', h.steps ?? '', h.exercise ?? '', h.stand ?? '', h.restingHR ?? '', sleepOn(d).hours ?? '',
       rec?.miss?.reason ? reasonOf(rec.miss.reason)?.label || rec.miss.reason : '', rec?.miss?.note || '', rec?.pain ?? '', rDone, rTot, rec?.note || '', rec?.rehabNote || '',
-      trendMap[d] != null ? r1(trendMap[d]) : '', targets(d)?.kcal ?? '', targets(d)?.protein ?? '', rec?.water ?? '']);
+      trendMap[d] != null ? r1(trendMap[d]) : '', targets(d)?.kcal ?? '', targets(d)?.protein ?? '', rec?.water ?? '',
+      sleepOn(d).bed || '', sleepOn(d).wake || '', sleepOn(d).q ?? '', sleepOn(d).deep ?? '', sleepOn(d).rem ?? '', p.sidesDone ? r0(c.lift?.minutes) : '', rec?.watchKcal ?? '']);
   }
 
   // Sets
@@ -2813,10 +3181,11 @@ function workbookSheets() {
     ['Schedule rules', 'Repeating 3-day cycle: Day 1 train, Day 2 train (same workout), Day 3 rest. If a training day passes without the workout, it is a miss and the next day restarts at Day 1. A training day counts when finished or at least ' + Math.round(s.threshold * 100) + '% of checks are done. Planned time off is not a miss and does not break the streak.'],
     ...blocksText.map((t, i) => [i === 0 ? 'Workout' : '', t]),
     ['Progression rule', `Double progression: when every set of an exercise reaches the top of its rep range, the next session goes up ${+s.weightStep || 5} lb.`],
-    ['Calorie estimates', `Calories out is from Apple Health when synced (see kcal_out_source); otherwise estimated: resting burn (Mifflin-St Jeor) x ${s.activityFactor}, plus lifting (${s.minPerSetSide} min per logged side-set at MET ${s.liftMet}, drop sets ${s.dropMin ?? 0.5} min at MET ${s.dropMet ?? 6}) and cardio (Beat Saber at MET ${cardioBlocks()[0]?.items[0]?.met ?? 6}). Food values come from product labels and USDA data and are estimates.`],
+    ['Calorie estimates', `Calories out is from Apple Health when synced (see kcal_out_source); otherwise estimated: resting burn (Mifflin-St Jeor) x ${s.activityFactor}, plus active calories from lifting (each logged set: reps x ${s.tempoSec ?? 3} s at that exercise's MET, 4 for curls and raises up to 7 for squats and deadlifts, up to 15% more for sets near your best; ${s.restSec ?? 90} s rest per set at MET ${REST_MET}, or the real session time when timed; drop sets ${s.dropMin ?? 0.5} min at MET ${s.dropMet ?? 6}) and cardio (minutes x MET). METs are scaled to your own resting burn and only the part above resting is counted. watch_kcal, when entered, replaces the workout estimate. Food values come from product labels and USDA data and are estimates.`],
     ['Tab: Summary', 'Headline stats, averages, and each exercise\'s working weight, last reps, progression status and best weight.'],
     ['Tab: Daily', 'One row per day. Key columns: plan_day, status (done, missed, rest, off, today, extra = trained on a rest day), workout_completion_pct, kcal_in/kcal_out/net_kcal, macros, body_weight_lb, Apple Health activity (apple_active_kcal, steps, exercise_min, stand_hours, resting_hr_bpm, sleep_hours), missed_reason, pain_0_10 and recovery_* during time off.'],
     ['Tab: Sets', 'One row per logged set and side (left, right or both). est_1rm_lb is an estimated one-rep max (Epley: weight x (1 + reps/30)). drop_set_to_failure applies only to the last set. completed = the set was checked off.'],
+    ['Sleep', `sleep_hours is the night that ended on the morning of that date, from bedtime and wake time you entered, otherwise from Apple Health. sleep_quality_1_5: 1 awful to 5 great. Goal: ${+s.sleepGoal || 8} h.`],
     ['Trend and targets', 'trend_weight_lb is a smoothed body weight (10% exponential moving average). Maintenance calories = average intake minus weight-trend change x 3,500 kcal per lb over the last 28 days. kcal_target = maintenance +/- 500 kcal per lb/week of the goal, lower on time-off days. water_cups are 8 oz cups.'],
     ['Tab: Food', 'One row per food eaten per day, with totals for the quantity eaten.'],
     ['Tab: Plans', 'The current workout plan and meal plan (per-unit nutrition), plus foods saved under My foods.'],
@@ -2948,9 +3317,8 @@ function exportCandidates() {
     let liftEnd = at(d, 12);
     if (p.sidesDone > 0) {
       const start = sameDay(rec.startedAt, d) ? rec.startedAt : at(d, 12);
-      const real = sameDay(rec.finishedAt, d) ? (rec.finishedAt - start) / 60000 : null;
-      const measured = real && real >= 10 && real <= 240 ? real : null;
-      const energy = liftEnergy(rec, d, measured);
+      const measured = measuredLiftMinutes(rec, d);
+      const energy = rec.watchKcal ? { kcal: +rec.watchKcal, minutes: measured || liftEnergy(rec, d).minutes } : liftEnergy(rec, d, measured);
       const minutes = Math.round(Math.max(10, energy.minutes));
       liftEnd = start + minutes * 60000;
       if (sh.workouts && finished && !sent('w:' + d, d)) {

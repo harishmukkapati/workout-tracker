@@ -53,6 +53,14 @@ const APPLE_TYPES = {
   HKQuantityTypeIdentifierAppleExerciseTime: 'exercise',
 };
 const attr = (line, name) => { const m = line.match(new RegExp(`\\s${name}="([^"]*)"`)); return m ? m[1] : null; };
+// "2026-10-27 23:40:00 -0400" -> Date
+const appleTime = (s) => { const m = String(s || '').match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) ([+-]\d{2})(\d{2})$/); return m ? new Date(`${m[1]}T${m[2]}${m[3]}:${m[4]}`) : new Date(s); };
+const pad2 = (n) => String(n).padStart(2, '0');
+const localDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const hhmm = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+// Sleep that ends between noon yesterday and noon today is "last night" for today.
+const nightOf = (end) => localDay(new Date(end.getTime() + 12 * 3600e3));
+const SLEEP_STAGE = { HKCategoryValueSleepAnalysisAsleepCore: 'core', HKCategoryValueSleepAnalysisAsleepDeep: 'deep', HKCategoryValueSleepAnalysisAsleepREM: 'rem', HKCategoryValueSleepAnalysisAsleepUnspecified: 'asleep', HKCategoryValueSleepAnalysisAsleep: 'asleep' };
 
 async function importApple(file) {
   let stream;
@@ -65,10 +73,23 @@ async function importApple(file) {
   const weights = {};
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let records = 0;
+  const nights = {};
   for await (const line of rl) {
     const i = line.indexOf('<Record ');
     if (i < 0) continue;
     const type = attr(line, 'type');
+    if (type === 'HKCategoryTypeIdentifierSleepAnalysis') {
+      const stage = SLEEP_STAGE[attr(line, 'value')];
+      if (!stage) continue;
+      const a = appleTime(attr(line, 'startDate')), b = appleTime(attr(line, 'endDate'));
+      if (!(b > a)) continue;
+      records++;
+      const n = ((nights[nightOf(b)] ||= {})[attr(line, 'sourceName') || 'unknown'] ||= { min: 0, core: 0, deep: 0, rem: 0, bed: a, wake: b });
+      const m = (b - a) / 60000;
+      n.min += m; if (stage !== 'asleep') n[stage] += m;
+      if (a < n.bed) n.bed = a; if (b > n.wake) n.wake = b;
+      continue;
+    }
     const key = APPLE_TYPES[type];
     if (!key) continue;
     const start = attr(line, 'startDate');
@@ -95,6 +116,11 @@ async function importApple(file) {
     for (const [key, bySrc] of Object.entries(metrics)) d[key] = Math.round(Math.max(...Object.values(bySrc)));
   }
   for (const [date, w] of Object.entries(weights)) (days[date] ||= {}).weightLb = Math.round(w.v * 10) / 10;
+  for (const [date, bySrc] of Object.entries(nights)) {
+    const n = Object.values(bySrc).sort((x, y) => y.min - x.min)[0]; // the source that saw the most sleep (Watch over iPhone)
+    if (!n || n.min < 60) continue;
+    Object.assign((days[date] ||= {}), sleepFields(n.min / 60, n.bed, n.wake, n.deep / 60, n.rem / 60, n.core / 60));
+  }
   return { days, summary: `${records.toLocaleString()} records across ${Object.keys(days).length} days`, source: 'Apple Health' };
 }
 
@@ -208,6 +234,15 @@ const HAE_NAMES = [
 ];
 const SIMPLE_KEYS = { active: 'active', activeenergy: 'active', move: 'active', basal: 'basal', resting: 'basal', restingenergy: 'basal', steps: 'steps', exercise: 'exercise', exerciseminutes: 'exercise', stand: 'stand', standhours: 'stand', weight: 'weightLb', weightlb: 'weightLb', weightkg: 'weightKg', restinghr: 'restingHR', restingheartrate: 'restingHR', sleep: 'sleepH', sleephours: 'sleepH', total: 'total' };
 const toNum = (v) => { const n = parseFloat(String(v ?? '').replace(/,/g, '')); return isFinite(n) ? n : null; };
+const r1 = (v) => Math.round(v * 10) / 10;
+function sleepFields(h, bed, wake, deep, rem, core) {
+  const o = { sleepH: r1(h) };
+  if (bed instanceof Date && !isNaN(bed)) o.sleepBed = hhmm(bed);
+  if (wake instanceof Date && !isNaN(wake)) o.sleepWake = hhmm(wake);
+  if (deep) o.sleepDeep = r1(deep); if (rem) o.sleepRem = r1(rem); if (core) o.sleepCore = r1(core);
+  return o;
+}
+const anyTime = (v) => { if (!v) return null; const d = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}$/.test(v) ? appleTime(v) : new Date(v); return isNaN(d) ? null : d; };
 
 function parseHealthJSON(obj) {
   const days = {};
@@ -219,7 +254,13 @@ function parseHealthJSON(obj) {
       const date = normDate(String(e.date || e.day || ''));
       if (!date) continue;
       for (const [k, v] of Object.entries(e)) {
-        const key = SIMPLE_KEYS[k.toLowerCase().replace(/[^a-z]/g, '')];
+        const lk = k.toLowerCase().replace(/[^a-z]/g, '');
+        if (['bedtime', 'sleepstart', 'bed'].includes(lk) || ['waketime', 'sleepend', 'wake'].includes(lk)) {
+          const t = /^\d{1,2}:\d{2}$/.test(String(v)) ? String(v).padStart(5, '0') : anyTime(v) ? hhmm(anyTime(v)) : null;
+          if (t) (days[date] ||= {})[['bedtime', 'sleepstart', 'bed'].includes(lk) ? 'sleepBed' : 'sleepWake'] = t;
+          continue;
+        }
+        const key = SIMPLE_KEYS[lk];
         const n = toNum(v);
         if (!key || n == null) continue;
         if (key === 'weightKg') put(date, 'weightLb', Math.round(n * KG_TO_LB * 10) / 10);
@@ -231,7 +272,7 @@ function parseHealthJSON(obj) {
   }
   const metrics = obj?.data?.metrics || obj?.metrics;
   if (!Array.isArray(metrics)) throw new Error('This file is not Health Auto Export or Shortcut data.');
-  const sums = {}, last = {}, avg = {};
+  const sums = {}, last = {}, avg = {}, sleep = {}, sleepBest = {};
   let points = 0;
   for (const m of metrics) {
     const name = String(m.name || '').toLowerCase();
@@ -243,8 +284,11 @@ function parseHealthJSON(obj) {
       if (!date) continue;
       points++;
       if (key === 'sleepH') {
+        const k = unit === 'min' ? 1 / 60 : 1;
         const h = toNum(p.totalSleep ?? p.asleep ?? p.qty);
-        if (h != null) ((sums[date] ||= {}).sleepH = Math.max(sums[date].sleepH || 0, unit === 'min' ? h / 60 : h));
+        if (h == null || h * k <= (sleepBest[date] || 0)) continue;
+        sleepBest[date] = h * k;
+        Object.assign((sleep[date] ||= {}), sleepFields(h * k, anyTime(p.sleepStart || p.inBedStart), anyTime(p.sleepEnd || p.inBedEnd), toNum(p.deep) * k, toNum(p.rem) * k, toNum(p.core) * k));
         continue;
       }
       let v = toNum(p.qty ?? p.Avg ?? p.avg);
@@ -260,6 +304,7 @@ function parseHealthJSON(obj) {
   for (const [date, d] of Object.entries(sums)) for (const [k, v] of Object.entries(d)) put(date, k, k === 'sleepH' ? Math.round(v * 10) / 10 : Math.round(v));
   for (const [date, w] of Object.entries(last)) put(date, 'weightLb', Math.round(w.v * 10) / 10);
   for (const [date, a] of Object.entries(avg)) put(date, 'restingHR', Math.round(a.s / a.n));
+  for (const [date, f] of Object.entries(sleep)) Object.assign((days[date] ||= {}), f);
   return { days, summary: `${points.toLocaleString()} reading${points === 1 ? '' : 's'} across ${Object.keys(days).length} day${Object.keys(days).length === 1 ? '' : 's'}`, source: 'Apple Health' };
 }
 

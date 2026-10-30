@@ -1,6 +1,6 @@
 {
-  "version": "1.11.0",
+  "version": "1.12.0",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Add any of 200+ exercises, cardio or sports to a day, or create your own."
+  "notes": "Personalized workout calories, sleep tracking, a rest timer, an easing-back plan after time off, and a weekly recap."
 }
