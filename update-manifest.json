@@ -1,10 +1,10 @@
 {
-  "version": "1.12.1",
+  "version": "1.12.2",
   "minShell": 1,
-  "ref": "7b2d2f51afb7394bdc4adcef0c9cc261ad786cb8",
-  "notes": "Type exact food amounts, plus candy, restaurant meals and Fairlife 2% chocolate milk in the food list.",
+  "ref": "d1ce92c87dc8d74513156e71ea5f2d416dfe8284",
+  "notes": "Training on a rest day never breaks your streak, even if you don't get to it.",
   "files": {
-    "app/app.js": "3757b15a869de2aa6ab570486ac75abba289ab9ed4f794d45fcb17ca130d0fc6",
+    "app/app.js": "a02f66af490cb844fe008d5864bb27801b0900e5468d05cbc0fabcc18fe2483f",
     "app/exercises.js": "59f78abcc5ce9dfe8c7d951a5b5b1c77b469a32ec9dbb88f5f9f8fef3c24ee2c",
     "app/fonts/OFL-google-sans-flex.txt": "7168a081fbcea8dbe975e3a015c4e340761b3b4ddf8de0c8a818543f773a29e0",
     "app/fonts/google-sans-flex.woff2": "87218291dc2464e35c34d2a21f7127bdba4d7beee22975d3552245d2293a6d38",
@@ -15,6 +15,6 @@
     "preload.js": "51ae11f50044ce4da15a76d922c0ad21dd162f61b581b9f17c161d543ec86933",
     "src/importers.js": "08db120615d48a81cd7b76a7f95f6ca6c75c9e689ac200ba239976e47d045ef8",
     "src/xlsx.js": "0ca61e04aeed2908196e8b0c9f057de8087b2ca6c56d943e0db09b77b2458fb1",
-    "version.json": "fae5f924e9619838e6805e074a2d2616a7e167f0896d62d2a90ca33992a08e9d"
+    "version.json": "15c9bd9d732fb8d208ba75e1f427b3695a83d6cdbd8207796edef55365d3a142"
   }
 }
