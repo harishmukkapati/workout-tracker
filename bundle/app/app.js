@@ -1703,7 +1703,7 @@ function mealsCard(date) {
         return `<li class="food ${f?.on ? 'on' : ''}" data-meal="${m.id}" data-item="${it.id}">
           <button class="check sm ${f?.on ? 'on' : ''}" data-action="food" aria-label="Ate ${esc(it.name)}">${ICON.check}</button>
           <span class="food-name">${f?.swapId ? `${esc(f.name)}<small>${esc(f.unit || '')}, instead of ${esc(it.name.toLowerCase())}</small>` : `${esc(it.name)}<small>${esc(it.unit)}</small>`}</span>
-          <span class="qty"><button data-action="qty" data-d="-1" aria-label="Less">−</button><b>${qty}</b><button data-action="qty" data-d="1" aria-label="More">+</button></span>
+          <span class="qty"><button data-action="qty" data-d="-1" aria-label="Less">−</button><input class="qty-in" type="number" inputmode="decimal" min="0" step="any" value="${qty}" data-input="food-qty" aria-label="Amount of ${esc(it.name)} (${esc(f?.swapId ? f.unit || '' : it.unit)})"><button data-action="qty" data-d="1" aria-label="More">+</button></span>
           <span class="food-kcal">${num(qty * (f?.swapId ? f.kcal : it.kcal))}</span>
           <button class="swap-btn ${f?.swapId ? 'on' : ''}" data-action="swap" aria-label="Swap ${esc(it.name)}" title="Swap for something else today"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4 3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/></svg></button>
         </li>`;
@@ -1714,7 +1714,7 @@ function mealsCard(date) {
     const q = c.qty ?? 1, n = c.n || { carbs: c.carbs, fat: c.fat };
     const detail = c.unit ? `${esc(c.unit)}, ${num(q * c.protein)} g protein` : `${num(c.protein)} g protein${n.carbs ? `, ${num(n.carbs)} g carbs` : ''}${n.fat ? `, ${num(n.fat)} g fat` : ''}`;
     return `<li class="food on extra" data-cid="${c.id}"><span class="food-name">${esc(c.name)}<small>${detail}</small></span>
-      ${c.unit ? `<span class="qty"><button data-action="cqty" data-id="${c.id}" data-d="-1" aria-label="Less">−</button><b>${q}</b><button data-action="cqty" data-id="${c.id}" data-d="1" aria-label="More">+</button></span>` : '<span></span>'}
+      ${c.unit ? `<span class="qty"><button data-action="cqty" data-id="${c.id}" data-d="-1" aria-label="Less">−</button><input class="qty-in" type="number" inputmode="decimal" min="0" step="any" value="${q}" data-input="cqty-in" data-id="${c.id}" aria-label="Amount of ${esc(c.name)} (${esc(c.unit)})"><button data-action="cqty" data-id="${c.id}" data-d="1" aria-label="More">+</button></span>` : '<span></span>'}
       <span class="food-kcal">${num(q * c.kcal)}</span><button class="icon-btn sm" data-action="del-custom" data-id="${c.id}" aria-label="Remove ${esc(c.name)}">${ICON.x}</button></li>`;
   }).join('');
   const exK = (rec?.custom || []).reduce((a, c) => a + (c.qty ?? 1) * (+c.kcal || 0), 0);
@@ -2920,6 +2920,22 @@ document.addEventListener('change', (e) => {
   if (k === 'sleep-bed' || k === 'sleep-wake') {
     const r = getDay(date); r.sleep ||= {};
     if (el.value) r.sleep[k === 'sleep-bed' ? 'bed' : 'wake'] = el.value; else delete r.sleep[k === 'sleep-bed' ? 'bed' : 'wake'];
+    save(); return render();
+  }
+  if (k === 'food-qty') {
+    const li = el.closest('.food'), m = data.meals.find(x => x.id === li.dataset.meal), it = m?.items.find(x => x.id === li.dataset.item);
+    if (!it) return;
+    const v = Math.max(0, round(+el.value || 0, 2)), rec = getDay(date);
+    const f = rec.food[it.id] || snap(it, false); f.n ||= it.n;
+    f.qty = v; f.on = v > 0;
+    rec.food[it.id] = f;
+    save(); return render();
+  }
+  if (k === 'cqty-in') {
+    const rec = getDay(date), c = rec.custom.find(x => x.id === el.dataset.id); if (!c) return;
+    const v = Math.max(0, round(+el.value || 0, 2));
+    if (!v) { rec.custom = rec.custom.filter(x => x !== c); toast(`Removed ${c.name}`); }
+    else c.qty = v;
     save(); return render();
   }
   if (k === 'watch-kcal') { const rec = getDay(date); if (+el.value > 0) rec.watchKcal = Math.round(+el.value); else delete rec.watchKcal; save(); return render(); }

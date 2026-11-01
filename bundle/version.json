@@ -1,6 +1,6 @@
 {
-  "version": "1.12.0",
+  "version": "1.12.1",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Personalized workout calories, sleep tracking, a rest timer, an easing-back plan after time off, and a weekly recap."
+  "notes": "Type exact food amounts, plus candy, restaurant meals and Fairlife 2% chocolate milk in the food list."
 }

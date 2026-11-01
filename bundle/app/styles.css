@@ -1061,3 +1061,9 @@ b.pos { color: var(--pos); } b.neg { color: var(--neg); }
 .recap-list li { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--text) 10%, transparent); }
 .recap-list li span { color: var(--muted); }
 .recap-t small { color: var(--faint); }
+
+/* Typeable food amounts */
+.qty .qty-in { width: 40px; height: 24px; padding: 0 2px; border: 0; border-radius: 8px; background: transparent; text-align: center; font: inherit; font-size: 13.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); -moz-appearance: textfield; appearance: textfield; box-shadow: none; }
+.qty .qty-in::-webkit-inner-spin-button, .qty .qty-in::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.qty .qty-in:hover { background: var(--surface-3); }
+.qty .qty-in:focus { outline: none; background: var(--surface); box-shadow: 0 0 0 2px var(--cyan); border-color: transparent; }
