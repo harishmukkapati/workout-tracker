@@ -322,11 +322,14 @@ function schedule() {
   return memoize('schedule', () => {
     const s = data.settings, L = s.cycle.length, today = todayStr();
     const resets = new Set(s.resets);
+    // "Train today instead" on a rest day: if that workout never happens, the day stays a rest day.
+    // It's never a miss and never breaks your streak.
+    const swapped = new Set(s.trainAnyway || []);
     const out = {};
     let anchor = s.startDate;
     const end = addDays(today, 120);
     for (let d = s.startDate; d <= end; d = addDays(d, 1)) {
-      if (resets.has(d)) anchor = d;
+      if (resets.has(d) && !(swapped.has(d) && d < today && !isDone(data.days[d]))) anchor = d;
       const br = breakOn(d);
       if (br) { out[d] = { day: 0, kind: 'off', status: 'off', label: br.label || 'Time off', until: br.end, breakId: br.id }; anchor = addDays(d, 1); continue; }
       const idx = mod(diffDays(anchor, d), L);
@@ -355,7 +358,8 @@ function stats() {
     let streak = 0;
     for (let i = dates.length - 1; i >= 0; i--) {
       const st = sc[dates[i]].status;
-      if (dates[i] === today && st === 'today') continue;
+      // A rest day you chose to train on counts either way (it's done, or it stays a rest day).
+      if (dates[i] === today && st === 'today') { if ((data.settings.trainAnyway || []).includes(today)) streak++; continue; }
       if (st === 'off') continue;
       if (st === 'missed') break;
       streak++;
@@ -1298,7 +1302,7 @@ function workoutSection(date, sc, rec, p, isFuture, isPast) {
         <div>
           <h2>Rest day</h2>
           <p>Day ${sc.day} of ${data.settings.cycle.length}. Recovery is where the growth happens. Hit your food and protein today.</p>
-          ${date === todayStr() ? `<div class="row-gap"><button class="btn" data-action="train-anyway">Train today instead</button><span class="hint">Restarts your cycle at Day 1 today.</span></div>` : ''}
+          ${date === todayStr() ? `<div class="row-gap"><button class="btn" data-action="train-anyway">Train today instead</button><span class="hint">Today becomes Day 1. Your streak is safe either way: if you don't get to it, it stays a rest day.</span></div>` : ''}
         </div>
       </div>${adder}`;
   } else if (sc.kind === 'off' && !hasActivity(rec) && !extras.length) {
@@ -1334,7 +1338,9 @@ function workoutSection(date, sc, rec, p, isFuture, isPast) {
         ${done
           ? `<span class="done-stamp">${ICON.check} Finished ${rec.finishedAt ? new Date(rec.finishedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''}</span><button class="btn btn-ghost btn-small" data-action="unfinish">Undo</button>`
           : `<button class="btn btn-primary" data-action="finish" ${p.done ? '' : 'disabled'}>Finish workout</button>`}
-        ${date === todayStr() && sc.status === 'today' && !p.done ? `<button class="btn btn-ghost btn-small" data-action="skip-today">Skip today</button>` : ''}
+        ${date === todayStr() && sc.status === 'today' && !p.done ? ((data.settings.trainAnyway || []).includes(date)
+          ? `<button class="btn btn-ghost btn-small" data-action="back-to-rest">Back to rest day</button>`
+          : `<button class="btn btn-ghost btn-small" data-action="skip-today">Skip today</button>`) : ''}
       </div>
     </div>`;
   return pre + `<div class="blocks ${isFuture ? 'readonly' : ''}">${blocks}</div>` + adder + finish;
@@ -2618,7 +2624,13 @@ document.addEventListener('click', async (e) => {
     case 'set-reason': { const rec = getDay(date); rec.miss = { ...(rec.miss || {}), reason: a.dataset.reason }; break; }
     case 'train-anyway': {
       const s = data.settings; if (!s.resets.includes(date)) s.resets.push(date);
-      save(); render(); toast('Today is now Day 1'); return;
+      (s.trainAnyway ||= []); if (!s.trainAnyway.includes(date)) s.trainAnyway.push(date);
+      save(); render(); toast("Today is Day 1. If you don't get to it, it stays a rest day and your streak is safe."); return;
+    }
+    case 'back-to-rest': {
+      const s = data.settings;
+      s.resets = s.resets.filter(d => d !== date); s.trainAnyway = (s.trainAnyway || []).filter(d => d !== date);
+      save(); render(); toast('Back to a rest day'); return;
     }
     case 'restart-today': {
       const t = todayStr(), s = data.settings; if (!s.resets.includes(t)) s.resets.push(t);

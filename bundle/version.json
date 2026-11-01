@@ -1,6 +1,6 @@
 {
-  "version": "1.12.1",
+  "version": "1.12.2",
   "minShell": 1,
   "source": "harishmukkapati/workout-tracker",
-  "notes": "Type exact food amounts, plus candy, restaurant meals and Fairlife 2% chocolate milk in the food list."
+  "notes": "Training on a rest day never breaks your streak, even if you don't get to it."
 }
